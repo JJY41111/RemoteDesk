@@ -5,6 +5,7 @@
 #include <wrl/client.h>
 
 #include <chrono>
+#include <fstream>
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
@@ -16,6 +17,11 @@ namespace {
 
 constexpr wchar_t kWindowClassName[] = L"RemoteDeskCaptureWindow";
 constexpr wchar_t kWindowTitle[] = L"RemoteDesk - Desktop Capture";
+
+void Log(const char* message) {
+    std::ofstream stream("runtime.log", std::ios::app);
+    stream << message << '\n';
+}
 
 std::string HResultText(const char* operation, HRESULT hr) {
     std::ostringstream stream;
@@ -69,11 +75,15 @@ class DesktopCaptureApp {
 public:
     void Initialize(HWND window) {
         window_ = window;
+        Log("initialize: start");
 
         ThrowIfFailed(CreateDXGIFactory1(IID_PPV_ARGS(&factory_)),
                       "CreateDXGIFactory1");
+        Log("initialize: DXGI factory created");
         ThrowIfFailed(factory_->EnumAdapters1(0, &adapter_), "EnumAdapters1");
+        Log("initialize: adapter selected");
         ThrowIfFailed(adapter_->EnumOutputs(0, &output_), "EnumOutputs");
+        Log("initialize: output selected");
 
         output_->GetDesc(&outputDescription_);
         width_ = static_cast<UINT>(outputDescription_.DesktopCoordinates.right -
@@ -100,11 +110,13 @@ public:
                 &createdLevel, &context_);
         }
         ThrowIfFailed(result, "D3D11CreateDevice");
+        Log("initialize: D3D11 device created");
 
         ComPtr<IDXGIOutput1> output1;
         ThrowIfFailed(output_.As(&output1), "Query IDXGIOutput1");
         ThrowIfFailed(output1->DuplicateOutput(device_.Get(), &duplication_),
                       "DuplicateOutput");
+        Log("initialize: desktop duplication created");
 
         DXGI_SWAP_CHAIN_DESC1 swapChainDescription{};
         swapChainDescription.Width = width_;
@@ -121,10 +133,12 @@ public:
                           device_.Get(), window_, &swapChainDescription, nullptr,
                           nullptr, &swapChain_),
                       "CreateSwapChainForHwnd");
+        Log("initialize: swap chain created");
         factory_->MakeWindowAssociation(window_, DXGI_MWA_NO_ALT_ENTER);
 
         ThrowIfFailed(swapChain_->GetBuffer(0, IID_PPV_ARGS(&backBuffer_)),
                       "Get swap-chain buffer");
+        Log("initialize: complete");
 
         statisticsStart_ = Clock::now();
     }
@@ -167,6 +181,10 @@ public:
             std::chrono::duration<double, std::milli>(captureEnd - captureStart)
                 .count();
         ++frames_;
+        if (!firstFrameCaptured_) {
+            Log("capture: first frame presented");
+            firstFrameCaptured_ = true;
+        }
         UpdateStatisticsIfNeeded();
     }
 
@@ -217,6 +235,7 @@ private:
     unsigned long long frames_{};
     unsigned long long timeouts_{};
     double captureTimeMilliseconds_{};
+    bool firstFrameCaptured_{};
 };
 
 HWND CreateMainWindow(HINSTANCE instance) {
@@ -253,13 +272,19 @@ HWND CreateMainWindow(HINSTANCE instance) {
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     try {
+        {
+            std::ofstream resetLog("runtime.log", std::ios::trunc);
+            resetLog << "RemoteDesk runtime started\n";
+        }
         const HWND window = CreateMainWindow(instance);
+        Log("window: created");
 
         DesktopCaptureApp application;
         application.Initialize(window);
 
         ShowWindow(window, showCommand);
         UpdateWindow(window);
+        Log("window: shown");
 
         MSG message{};
         bool running = true;

@@ -3,6 +3,7 @@
 /.vs/
 /out/
 *.obj
+/runtime.log
 *.user
 *.suo
 *.VC.db
