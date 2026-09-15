@@ -1,48 +1,46 @@
-# H.264 recording validation — 2026-09-16
+# H.264 錄影驗證紀錄 — 2026-09-16
 
-## Build
+## 建置結果
 
-- Compiler: Microsoft Visual C++ 19.50.35721
-- Windows SDK: 10.0.26100.0
-- Command: `build.bat`
-- Result: successful, without compiler errors or warnings from project code
+- 編譯器：Microsoft Visual C++ 19.50.35721
+- Windows SDK：10.0.26100.0
+- 建置指令：`build.bat`
+- 結果：建置成功，專案程式碼沒有產生編譯錯誤或警告
 
-## Automatic recording test
+## 自動錄影測試
 
-- Command: `out\remote_desk.exe --record-test`
-- Process exit code: `0`
-- Output: `capture.mp4`
-- Container duration: 4.9999666 seconds
-- Encoded frames: 150
-- Resolution: 2560x1440
-- Frame rate: 30 fps
-- Video compression: H.264
-- File size: 2,127,734 bytes
-- Reported average video bitrate: 3,402,136 bits per second
+- 執行指令：`out\remote_desk.exe --record-test`
+- 程序結束代碼：`0`
+- 輸出檔案：`capture.mp4`
+- 容器時長：4.9999666 秒
+- 編碼幀數：150 幀
+- 解析度：2560×1440
+- 幀率：30 fps
+- 影片壓縮格式：H.264
+- 檔案大小：2,127,734 位元組
+- 系統回報的平均影片位元率：3,402,136 bits/s
 
-The middle frame was decoded separately. It had a 2560x1440 BGR image, a pixel
-range of 0–255, and a mean value of 33.8. Visual inspection confirmed that the
-desktop was present and the video was not a black-frame-only file.
+另外單獨解碼影片的中間幀進行檢查。該影像為 2560×1440 的 BGR 畫面，
+像素值範圍為 0～255，平均值為 33.8。經過視覺檢查，確認影片內確實包含
+桌面畫面，不是只有黑色畫面的無效影片。
 
-## Defect found and fixed
+## 發現並修正的缺陷
 
-The first recording produced a structurally valid five-second H.264 file with
-150 frames, but every decoded pixel was black. The recorder was reading the
-swap-chain back buffer after `Present`. Because the swap chain uses
-`DXGI_SWAP_EFFECT_FLIP_DISCARD`, its contents are not guaranteed to remain valid
-after presentation.
+第一次錄影產生的 H.264 檔案結構正常，影片長度為五秒並包含 150 幀，
+但解碼後的所有像素都是黑色。原因是錄影器在呼叫 `Present` 後，才讀取
+Swap Chain 的 Back Buffer。由於此 Swap Chain 使用
+`DXGI_SWAP_EFFECT_FLIP_DISCARD`，完成畫面呈現後，系統不保證該緩衝區的
+內容仍然有效。
 
-The fix adds a dedicated `latestFrameTexture`. Each acquired desktop frame is
-copied there before presentation. Both the preview back buffer and H.264
-recorder now read from that stable texture.
+修正方式是加入專用的 `latestFrameTexture`。每次取得桌面畫面後，會先將
+該幀複製到這個 Texture，再執行畫面呈現。預覽用的 Back Buffer 與 H.264
+錄影器現在都會從這份穩定保存的 Texture 讀取畫面。
 
-## Current limitations
+## 目前限制
 
-- Media Foundation is allowed to select hardware transforms, but the exact
-  encoder MFT has not been identified. This run does not prove NVENC usage.
-- Encoding currently performs a GPU-to-CPU readback through a staging texture.
-- Recording is fixed at 30 fps and a requested 8 Mbps target bitrate.
-- No decoder, network transport, remote input, audio, or cursor composition has
-  been implemented yet.
-- This is one successful short validation run, not a long-duration stability
-  result.
+- Media Foundation 已設定為允許選擇硬體轉換，但尚未識別實際使用的
+  Encoder MFT，因此本次測試不能證明使用了 NVENC。
+- 編碼流程目前會透過 Staging Texture，將畫面從 GPU 回讀至 CPU。
+- 錄影目前固定為 30 fps，要求的目標位元率為 8 Mbps。
+- 尚未實作解碼器、網路傳輸、遠端輸入、音訊及滑鼠游標合成。
+- 本次結果僅代表一次短時間測試成功，不能當作長時間穩定性測試結果。
