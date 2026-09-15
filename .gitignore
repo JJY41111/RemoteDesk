@@ -4,6 +4,7 @@
 /out/
 *.obj
 /runtime.log
+/capture.mp4
 *.user
 *.suo
 *.VC.db

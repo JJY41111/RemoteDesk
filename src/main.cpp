@@ -4,6 +4,8 @@
 #include <dxgi1_2.h>
 #include <wrl/client.h>
 
+#include "h264_recorder.h"
+
 #include <chrono>
 #include <fstream>
 #include <iomanip>
@@ -17,8 +19,9 @@ namespace {
 
 constexpr wchar_t kWindowClassName[] = L"RemoteDeskCaptureWindow";
 constexpr wchar_t kWindowTitle[] = L"RemoteDesk - Desktop Capture";
+bool gToggleRecordingRequested = false;
 
-void Log(const char* message) {
+void Log(const std::string& message) {
     std::ofstream stream("runtime.log", std::ios::app);
     stream << message << '\n';
 }
@@ -60,6 +63,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             DestroyWindow(window);
             return 0;
         }
+        if (wParam == 'R') {
+            gToggleRecordingRequested = true;
+            return 0;
+        }
         break;
     case WM_DESTROY:
         PostQuitMessage(0);
@@ -73,8 +80,9 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
 
 class DesktopCaptureApp {
 public:
-    void Initialize(HWND window) {
+    void Initialize(HWND window, bool automaticRecordingTest) {
         window_ = window;
+        automaticRecordingTest_ = automaticRecordingTest;
         Log("initialize: start");
 
         ThrowIfFailed(CreateDXGIFactory1(IID_PPV_ARGS(&factory_)),
@@ -138,12 +146,27 @@ public:
 
         ThrowIfFailed(swapChain_->GetBuffer(0, IID_PPV_ARGS(&backBuffer_)),
                       "Get swap-chain buffer");
+
+        D3D11_TEXTURE2D_DESC latestFrameDescription{};
+        latestFrameDescription.Width = width_;
+        latestFrameDescription.Height = height_;
+        latestFrameDescription.MipLevels = 1;
+        latestFrameDescription.ArraySize = 1;
+        latestFrameDescription.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        latestFrameDescription.SampleDesc.Count = 1;
+        latestFrameDescription.Usage = D3D11_USAGE_DEFAULT;
+        ThrowIfFailed(device_->CreateTexture2D(&latestFrameDescription, nullptr,
+                                               &latestFrameTexture_),
+                      "Create latest-frame texture");
         Log("initialize: complete");
 
         statisticsStart_ = Clock::now();
     }
 
     void CaptureNextFrame() {
+        ProcessRecordingRequest();
+        ProcessAutomaticRecording();
+
         DXGI_OUTDUPL_FRAME_INFO frameInfo{};
         ComPtr<IDXGIResource> desktopResource;
 
@@ -153,6 +176,7 @@ public:
 
         if (result == DXGI_ERROR_WAIT_TIMEOUT) {
             ++timeouts_;
+            EncodeCurrentFrameIfDue();
             UpdateStatisticsIfNeeded();
             return;
         }
@@ -173,7 +197,8 @@ public:
         ThrowIfFailed(desktopResource.As(&desktopTexture),
                       "Query desktop texture");
 
-        context_->CopyResource(backBuffer_.Get(), desktopTexture.Get());
+        context_->CopyResource(latestFrameTexture_.Get(), desktopTexture.Get());
+        context_->CopyResource(backBuffer_.Get(), latestFrameTexture_.Get());
         ThrowIfFailed(swapChain_->Present(0, 0), "Present");
 
         const auto captureEnd = Clock::now();
@@ -185,11 +210,70 @@ public:
             Log("capture: first frame presented");
             firstFrameCaptured_ = true;
         }
+        ProcessAutomaticRecording();
+        EncodeCurrentFrameIfDue();
         UpdateStatisticsIfNeeded();
     }
 
 private:
     using Clock = std::chrono::steady_clock;
+
+    void ProcessRecordingRequest() {
+        if (!gToggleRecordingRequested) {
+            return;
+        }
+        gToggleRecordingRequested = false;
+
+        if (recorder_.IsRecording()) {
+            const auto encodedFrames = recorder_.EncodedFrames();
+            recorder_.Stop();
+            Log("recording: stopped after " + std::to_string(encodedFrames) +
+                " frames");
+            return;
+        }
+
+        if (!firstFrameCaptured_) {
+            MessageBeep(MB_ICONWARNING);
+            Log("recording: ignored because no desktop frame is available yet");
+            return;
+        }
+
+        recorder_.Start(L"capture.mp4", device_.Get(), context_.Get(), width_,
+                        height_, 30, 8'000'000);
+        Log("recording: started capture.mp4 at 30 FPS and 8 Mbps");
+    }
+
+    void EncodeCurrentFrameIfDue() {
+        if (firstFrameCaptured_) {
+            recorder_.WriteFrameIfDue(latestFrameTexture_.Get());
+        }
+    }
+
+    void ProcessAutomaticRecording() {
+        if (!automaticRecordingTest_ || !firstFrameCaptured_) {
+            return;
+        }
+
+        if (!automaticRecordingStarted_) {
+            recorder_.Start(L"capture.mp4", device_.Get(), context_.Get(), width_,
+                            height_, 30, 8'000'000);
+            automaticRecordingStarted_ = true;
+            automaticRecordingStart_ = Clock::now();
+            Log("recording test: started 5-second H.264 capture");
+            return;
+        }
+
+        const double elapsedSeconds = std::chrono::duration<double>(
+                                          Clock::now() - automaticRecordingStart_)
+                                          .count();
+        if (recorder_.IsRecording() && elapsedSeconds >= 5.0) {
+            const auto encodedFrames = recorder_.EncodedFrames();
+            recorder_.Stop();
+            Log("recording test: completed after " +
+                std::to_string(encodedFrames) + " frames");
+            PostMessage(window_, WM_CLOSE, 0, 0);
+        }
+    }
 
     void UpdateStatisticsIfNeeded() {
         const auto now = Clock::now();
@@ -209,6 +293,12 @@ private:
               << std::fixed << std::setprecision(1) << fps << L" FPS | avg "
               << std::setprecision(2) << averageCaptureMilliseconds
               << L" ms | timeouts " << timeouts_;
+        if (recorder_.IsRecording()) {
+            title << L" | REC H.264 " << recorder_.EncodedFrames()
+                  << L" frames";
+        } else {
+            title << L" | R: record";
+        }
         SetWindowText(window_, title.str().c_str());
 
         frames_ = 0;
@@ -230,12 +320,17 @@ private:
     ComPtr<IDXGIOutputDuplication> duplication_;
     ComPtr<IDXGISwapChain1> swapChain_;
     ComPtr<ID3D11Texture2D> backBuffer_;
+    ComPtr<ID3D11Texture2D> latestFrameTexture_;
+    remotedesk::H264Recorder recorder_;
 
     Clock::time_point statisticsStart_{};
     unsigned long long frames_{};
     unsigned long long timeouts_{};
     double captureTimeMilliseconds_{};
     bool firstFrameCaptured_{};
+    bool automaticRecordingTest_{};
+    bool automaticRecordingStarted_{};
+    Clock::time_point automaticRecordingStart_{};
 };
 
 HWND CreateMainWindow(HINSTANCE instance) {
@@ -270,8 +365,16 @@ HWND CreateMainWindow(HINSTANCE instance) {
 
 } // namespace
 
-int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
+int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine,
+                    int showCommand) {
     try {
+        const HRESULT comResult =
+            CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        ThrowIfFailed(comResult, "CoInitializeEx");
+        struct ComUninitializer {
+            ~ComUninitializer() { CoUninitialize(); }
+        } comUninitializer;
+
         {
             std::ofstream resetLog("runtime.log", std::ios::trunc);
             resetLog << "RemoteDesk runtime started\n";
@@ -280,7 +383,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
         Log("window: created");
 
         DesktopCaptureApp application;
-        application.Initialize(window);
+        const bool automaticRecordingTest =
+            commandLine != nullptr &&
+            wcsstr(commandLine, L"--record-test") != nullptr;
+        application.Initialize(window, automaticRecordingTest);
 
         ShowWindow(window, showCommand);
         UpdateWindow(window);
