@@ -23,8 +23,9 @@ if not exist out mkdir out
 cl.exe /nologo /std:c++20 /EHsc /W4 /permissive- ^
     /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /DNOMINMAX ^
     /Fe:out\remote_desk.exe src\main.cpp src\h264_recorder.cpp ^
-    /link d3d11.lib dxgi.lib user32.lib ole32.lib ^
-    mf.lib mfplat.lib mfreadwrite.lib mfuuid.lib
+    src\h264_loopback.cpp ^
+    /link d3d11.lib dxgi.lib user32.lib ole32.lib oleaut32.lib ^
+    mf.lib mfplat.lib mfreadwrite.lib mfuuid.lib wmcodecdspuuid.lib
 
 if errorlevel 1 exit /b %errorlevel%
 

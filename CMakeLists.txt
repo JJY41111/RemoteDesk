@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.20)
 project(RemoteDesk VERSION 0.1.0 LANGUAGES CXX)
 
 add_executable(remote_desk WIN32
+    src/h264_loopback.cpp
     src/h264_recorder.cpp
     src/main.cpp
 )
@@ -22,6 +23,8 @@ target_link_libraries(remote_desk PRIVATE
     mfplat
     mfreadwrite
     mfuuid
+    oleaut32
+    wmcodecdspuuid
 )
 
 if(MSVC)

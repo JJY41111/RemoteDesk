@@ -5,6 +5,7 @@
 #include <wrl/client.h>
 
 #include "h264_recorder.h"
+#include "h264_loopback.h"
 
 #include <chrono>
 #include <fstream>
@@ -20,6 +21,7 @@ namespace {
 constexpr wchar_t kWindowClassName[] = L"RemoteDeskCaptureWindow";
 constexpr wchar_t kWindowTitle[] = L"RemoteDesk - Desktop Capture";
 bool gToggleRecordingRequested = false;
+bool gToggleLoopbackRequested = false;
 
 void Log(const std::string& message) {
     std::ofstream stream("runtime.log", std::ios::app);
@@ -67,6 +69,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             gToggleRecordingRequested = true;
             return 0;
         }
+        if (wParam == 'L') {
+            gToggleLoopbackRequested = true;
+            return 0;
+        }
         break;
     case WM_DESTROY:
         PostQuitMessage(0);
@@ -80,9 +86,11 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
 
 class DesktopCaptureApp {
 public:
-    void Initialize(HWND window, bool automaticRecordingTest) {
+    void Initialize(HWND window, bool automaticRecordingTest,
+                    bool automaticLoopbackTest) {
         window_ = window;
         automaticRecordingTest_ = automaticRecordingTest;
+        automaticLoopbackTest_ = automaticLoopbackTest;
         Log("initialize: start");
 
         ThrowIfFailed(CreateDXGIFactory1(IID_PPV_ARGS(&factory_)),
@@ -165,7 +173,9 @@ public:
 
     void CaptureNextFrame() {
         ProcessRecordingRequest();
+        ProcessLoopbackRequest();
         ProcessAutomaticRecording();
+        ProcessAutomaticLoopback();
 
         DXGI_OUTDUPL_FRAME_INFO frameInfo{};
         ComPtr<IDXGIResource> desktopResource;
@@ -177,6 +187,8 @@ public:
         if (result == DXGI_ERROR_WAIT_TIMEOUT) {
             ++timeouts_;
             EncodeCurrentFrameIfDue();
+            ProcessLoopbackFrameIfDue();
+            ProcessAutomaticLoopback();
             UpdateStatisticsIfNeeded();
             return;
         }
@@ -211,7 +223,10 @@ public:
             firstFrameCaptured_ = true;
         }
         ProcessAutomaticRecording();
+        ProcessAutomaticLoopback();
         EncodeCurrentFrameIfDue();
+        ProcessLoopbackFrameIfDue();
+        ProcessAutomaticLoopback();
         UpdateStatisticsIfNeeded();
     }
 
@@ -237,6 +252,11 @@ private:
             Log("recording: ignored because no desktop frame is available yet");
             return;
         }
+        if (loopback_.IsRunning()) {
+            MessageBeep(MB_ICONWARNING);
+            Log("recording: ignored while H.264 loopback is active");
+            return;
+        }
 
         recorder_.Start(L"capture.mp4", device_.Get(), context_.Get(), width_,
                         height_, 30, 8'000'000);
@@ -247,6 +267,55 @@ private:
         if (firstFrameCaptured_) {
             recorder_.WriteFrameIfDue(latestFrameTexture_.Get());
         }
+    }
+
+    void ProcessLoopbackRequest() {
+        if (!gToggleLoopbackRequested) {
+            return;
+        }
+        gToggleLoopbackRequested = false;
+
+        if (loopback_.IsRunning()) {
+            loopback_.Stop();
+            LogLoopbackResult("loopback: stopped");
+            return;
+        }
+
+        if (!firstFrameCaptured_) {
+            MessageBeep(MB_ICONWARNING);
+            Log("loopback: ignored because no desktop frame is available yet");
+            return;
+        }
+        if (recorder_.IsRecording()) {
+            MessageBeep(MB_ICONWARNING);
+            Log("loopback: ignored while file recording is active");
+            return;
+        }
+
+        loopback_.Start(device_.Get(), context_.Get(), width_, height_);
+        Log("loopback: started 1280x720 H.264 memory pipeline");
+    }
+
+    void ProcessLoopbackFrameIfDue() {
+        if (firstFrameCaptured_ && loopback_.IsRunning()) {
+            loopback_.ProcessFrameIfDue(latestFrameTexture_.Get());
+        }
+    }
+
+    void LogLoopbackResult(const std::string& prefix) {
+        const auto& stats = loopback_.Statistics();
+        std::ostringstream message;
+        message << prefix << ": submitted=" << stats.submittedFrames
+                << ", encoded=" << stats.encodedFrames
+                << ", decoded=" << stats.decodedFrames
+                << ", bytes=" << stats.encodedBytes << ", convert_avg_ms="
+                << std::fixed << std::setprecision(2)
+                << stats.averageConversionMilliseconds << ", encode_avg_ms="
+                << stats.averageEncodeMilliseconds << ", queue_avg_ms="
+                << stats.averageQueueMilliseconds << ", decode_avg_ms="
+                << stats.averageDecodeMilliseconds << ", image="
+                << (stats.decodedFrameContainsImage ? "yes" : "no");
+        Log(message.str());
     }
 
     void ProcessAutomaticRecording() {
@@ -275,6 +344,29 @@ private:
         }
     }
 
+    void ProcessAutomaticLoopback() {
+        if (!automaticLoopbackTest_ || !firstFrameCaptured_) {
+            return;
+        }
+
+        if (!automaticLoopbackStarted_) {
+            loopback_.Start(device_.Get(), context_.Get(), width_, height_);
+            automaticLoopbackStarted_ = true;
+            automaticLoopbackStart_ = Clock::now();
+            Log("loopback test: started 5-second in-memory codec test");
+            return;
+        }
+
+        const double elapsedSeconds = std::chrono::duration<double>(
+                                          Clock::now() - automaticLoopbackStart_)
+                                          .count();
+        if (loopback_.IsRunning() && elapsedSeconds >= 5.0) {
+            loopback_.Stop();
+            LogLoopbackResult("loopback test: completed");
+            PostMessage(window_, WM_CLOSE, 0, 0);
+        }
+    }
+
     void UpdateStatisticsIfNeeded() {
         const auto now = Clock::now();
         const double seconds =
@@ -296,8 +388,15 @@ private:
         if (recorder_.IsRecording()) {
             title << L" | REC H.264 " << recorder_.EncodedFrames()
                   << L" frames";
+        } else if (loopback_.IsRunning()) {
+            const auto& loopbackStats = loopback_.Statistics();
+            title << L" | LOOP 720p enc " << loopbackStats.encodedFrames
+                  << L" dec " << loopbackStats.decodedFrames << L" | "
+                  << std::setprecision(1)
+                  << loopbackStats.averageEncodeMilliseconds << L"/"
+                  << loopbackStats.averageDecodeMilliseconds << L" ms";
         } else {
-            title << L" | R: record";
+            title << L" | R: record | L: loopback";
         }
         SetWindowText(window_, title.str().c_str());
 
@@ -322,6 +421,7 @@ private:
     ComPtr<ID3D11Texture2D> backBuffer_;
     ComPtr<ID3D11Texture2D> latestFrameTexture_;
     remotedesk::H264Recorder recorder_;
+    remotedesk::H264Loopback loopback_;
 
     Clock::time_point statisticsStart_{};
     unsigned long long frames_{};
@@ -331,6 +431,9 @@ private:
     bool automaticRecordingTest_{};
     bool automaticRecordingStarted_{};
     Clock::time_point automaticRecordingStart_{};
+    bool automaticLoopbackTest_{};
+    bool automaticLoopbackStarted_{};
+    Clock::time_point automaticLoopbackStart_{};
 };
 
 HWND CreateMainWindow(HINSTANCE instance) {
@@ -386,7 +489,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine,
         const bool automaticRecordingTest =
             commandLine != nullptr &&
             wcsstr(commandLine, L"--record-test") != nullptr;
-        application.Initialize(window, automaticRecordingTest);
+        const bool automaticLoopbackTest =
+            commandLine != nullptr &&
+            wcsstr(commandLine, L"--loopback-test") != nullptr;
+        application.Initialize(window, automaticRecordingTest,
+                               automaticLoopbackTest);
 
         ShowWindow(window, showCommand);
         UpdateWindow(window);
@@ -411,6 +518,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine,
 
         return static_cast<int>(message.wParam);
     } catch (const std::exception& error) {
+        Log(std::string("fatal: ") + error.what());
         const std::wstring message = ToWide(error.what());
         MessageBox(nullptr, message.c_str(), L"RemoteDesk error",
                    MB_OK | MB_ICONERROR);

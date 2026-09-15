@@ -2,7 +2,7 @@
 
 Windows 低延遲遠端桌面原型。目前使用 C++、Direct3D 11 與 DXGI Desktop
 Duplication API 擷取主要螢幕，並能透過 Windows Media Foundation 將畫面編碼成
-H.264 MP4。
+H.264 MP4，或在記憶體中完成 H.264 編碼、排隊與解碼 Loopback。
 
 ## 現階段功能
 
@@ -10,6 +10,7 @@ H.264 MP4。
 - 在本機視窗即時預覽桌面
 - 每秒在標題列顯示實際 FPS、平均擷取時間、逾時次數與解析度
 - 按 `R` 開始／停止錄製 `capture.mp4`（H.264、30 fps、8 Mbps）
+- 按 `L` 開始／停止 1280×720、30 fps 的記憶體 H.264 Loopback
 - 按 `Esc` 關閉程式
 
 > Media Foundation 已設定允許硬體轉換，但目前尚未識別實際被選用的編碼器，
@@ -34,6 +35,12 @@ H.264 MP4。
 
 ```powershell
 .\out\remote_desk.exe --record-test
+```
+
+若要自動執行五秒記憶體編解碼 Loopback：
+
+```powershell
+.\out\remote_desk.exe --loopback-test
 ```
 
 也可以在 Developer PowerShell for Visual Studio 中使用 CMake：
@@ -64,10 +71,24 @@ cmake --build build --config Release
 H.264 影片不是全黑畫面。詳細證據與限制見
 [`docs/validation-2026-09-16.md`](docs/validation-2026-09-16.md)。
 
+## 第三階段：本機即時編解碼 Loopback
+
+- 將桌面 BGRA 畫面縮放並轉換成 1280×720 NV12
+- 透過 Microsoft H.264 Encoder MFT 產生記憶體封包
+- 封包經由本機佇列送入 Microsoft H.264 Decoder MFT
+- 統計色彩轉換、編碼、排隊與解碼時間
+- 檢查解碼後的 NV12 畫面是否包含有效影像
+
+2026-09-16 的五秒測試完成 150 次提交、150 次編碼與 150 次解碼。詳細數據
+與限制見 [`docs/loopback-validation-2026-09-16.md`](docs/loopback-validation-2026-09-16.md)。
+
+目前主視窗仍顯示擷取端原始預覽；獨立的 Client 解碼預覽視窗尚未實作。
+
 ## 暫不處理
 
 - 網際網路連線與 NAT 穿透
 - 遠端鍵盤與滑鼠控制
+- 獨立 Client 視窗與區域網路傳輸
 - 虛擬延伸螢幕
 - 音訊、檔案傳輸與手把
 
