@@ -1,0 +1,36 @@
+#pragma once
+
+#include <cstdint>
+#include <memory>
+#include <vector>
+
+namespace remotedesk {
+
+struct PacketStatistics {
+    std::uint64_t packets{};
+    std::uint64_t bytes{};
+    std::uint64_t checksum{14695981039346656037ULL};
+};
+
+class TcpPacketSender {
+public:
+    TcpPacketSender();
+    TcpPacketSender(const TcpPacketSender&) = delete;
+    TcpPacketSender& operator=(const TcpPacketSender&) = delete;
+    ~TcpPacketSender();
+
+    void StartLoopback(unsigned short port);
+    void QueuePacket(const std::vector<std::uint8_t>& bytes,
+                     std::uint64_t sampleTime,
+                     std::uint64_t sampleDuration,
+                     unsigned width, unsigned height);
+    PacketStatistics Stop();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
+PacketStatistics ReceiveLoopbackPackets(unsigned short port);
+
+} // namespace remotedesk

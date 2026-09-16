@@ -6,6 +6,7 @@
 
 #include "h264_recorder.h"
 #include "h264_loopback.h"
+#include "network_transport.h"
 
 #include <chrono>
 #include <fstream>
@@ -110,10 +111,11 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
 class DesktopCaptureApp {
 public:
     void Initialize(HWND window, bool automaticRecordingTest,
-                    bool automaticLoopbackTest) {
+                    bool automaticLoopbackTest, bool automaticNetworkTest) {
         window_ = window;
         automaticRecordingTest_ = automaticRecordingTest;
         automaticLoopbackTest_ = automaticLoopbackTest;
+        automaticNetworkTest_ = automaticNetworkTest;
         Log("initialize: start");
 
         ThrowIfFailed(CreateDXGIFactory1(IID_PPV_ARGS(&factory_)),
@@ -203,6 +205,7 @@ public:
         ProcessLoopbackRequest();
         ProcessAutomaticRecording();
         ProcessAutomaticLoopback();
+        ProcessAutomaticNetwork();
 
         DXGI_OUTDUPL_FRAME_INFO frameInfo{};
         ComPtr<IDXGIResource> desktopResource;
@@ -216,6 +219,7 @@ public:
             EncodeCurrentFrameIfDue();
             ProcessLoopbackFrameIfDue();
             ProcessAutomaticLoopback();
+            ProcessAutomaticNetwork();
             UpdateStatisticsIfNeeded();
             return;
         }
@@ -258,9 +262,11 @@ public:
         }
         ProcessAutomaticRecording();
         ProcessAutomaticLoopback();
+        ProcessAutomaticNetwork();
         EncodeCurrentFrameIfDue();
         ProcessLoopbackFrameIfDue();
         ProcessAutomaticLoopback();
+        ProcessAutomaticNetwork();
         UpdateStatisticsIfNeeded();
     }
 
@@ -431,6 +437,42 @@ private:
         }
     }
 
+    void ProcessAutomaticNetwork() {
+        if (!automaticNetworkTest_ || !firstFrameCaptured_) {
+            return;
+        }
+
+        if (!automaticNetworkStarted_) {
+            networkSender_.StartLoopback(5000);
+            loopback_.SetPacketCallback(
+                [this](const std::vector<std::uint8_t>& bytes,
+                       LONGLONG sampleTime, LONGLONG sampleDuration) {
+                    networkSender_.QueuePacket(
+                        bytes, static_cast<std::uint64_t>(sampleTime),
+                        static_cast<std::uint64_t>(sampleDuration),
+                        loopback_.OutputWidth(), loopback_.OutputHeight());
+                });
+            loopback_.Start(device_.Get(), context_.Get(), width_, height_);
+            automaticNetworkStarted_ = true;
+            automaticNetworkStart_ = Clock::now();
+            Log("network test: connected to 127.0.0.1:5000");
+            return;
+        }
+
+        const double elapsedSeconds = std::chrono::duration<double>(
+                                          Clock::now() - automaticNetworkStart_)
+                                          .count();
+        if (loopback_.IsRunning() && elapsedSeconds >= 5.0) {
+            loopback_.Stop();
+            const auto network = networkSender_.Stop();
+            LogLoopbackResult("network test: codec completed");
+            Log("network test: sent=" + std::to_string(network.packets) +
+                ", bytes=" + std::to_string(network.bytes) +
+                ", checksum=" + std::to_string(network.checksum));
+            PostMessage(window_, WM_CLOSE, 0, 0);
+        }
+    }
+
     void UpdateStatisticsIfNeeded() {
         const auto now = Clock::now();
         const double seconds =
@@ -487,6 +529,7 @@ private:
     ComPtr<IDXGISurface1> latestFrameSurface_;
     remotedesk::H264Recorder recorder_;
     remotedesk::H264Loopback loopback_;
+    remotedesk::TcpPacketSender networkSender_;
     POINT pointerPosition_{};
     bool pointerVisible_{};
     unsigned long long pointerCompositedFrames_{};
@@ -502,6 +545,9 @@ private:
     bool automaticLoopbackTest_{};
     bool automaticLoopbackStarted_{};
     Clock::time_point automaticLoopbackStart_{};
+    bool automaticNetworkTest_{};
+    bool automaticNetworkStarted_{};
+    Clock::time_point automaticNetworkStart_{};
 };
 
 DesktopCaptureApp* gApplication = nullptr;
@@ -575,8 +621,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine,
         const bool automaticLoopbackTest =
             commandLine != nullptr &&
             wcsstr(commandLine, L"--loopback-test") != nullptr;
+        const bool automaticNetworkTest =
+            commandLine != nullptr &&
+            wcsstr(commandLine, L"--network-test") != nullptr;
         application.Initialize(window, automaticRecordingTest,
-                               automaticLoopbackTest);
+                               automaticLoopbackTest, automaticNetworkTest);
         gApplication = &application;
 
         ShowWindow(window, showCommand);

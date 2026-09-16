@@ -3,6 +3,7 @@
 Windows 低延遲遠端桌面原型。目前使用 C++、Direct3D 11 與 DXGI Desktop
 Duplication API 擷取主要螢幕，並能透過 Windows Media Foundation 將畫面編碼成
 H.264 MP4，或在記憶體中完成 H.264 編碼、排隊與解碼 Loopback。
+目前也有僅限同一台電腦的 TCP 傳輸驗證。
 
 ## 現階段功能
 
@@ -44,6 +45,22 @@ H.264 MP4，或在記憶體中完成 H.264 編碼、排隊與解碼 Loopback。
 ```powershell
 .\out\remote_desk.exe --loopback-test
 ```
+
+若要驗證獨立程序間的 H.264 TCP 傳輸，先在一個終端執行：
+
+```powershell
+.\out\remote_desk_receiver.exe
+```
+
+再在另一個終端執行：
+
+```powershell
+.\out\remote_desk.exe --network-test
+```
+
+兩個程序只透過 `127.0.0.1:5000` 連線。接收端目前核對封包邊界、幀數、
+資料量和校驗值，**尚未解碼或顯示畫面**。傳送測試詳見
+[`docs/network-validation-2026-09-16.md`](docs/network-validation-2026-09-16.md)。
 
 也可以在 Developer PowerShell for Visual Studio 中使用 CMake：
 
@@ -98,6 +115,7 @@ H.264 影片不是全黑畫面。詳細證據與限制見
 - 網際網路連線與 NAT 穿透
 - 遠端鍵盤與滑鼠控制
 - 獨立 Client 視窗與區域網路傳輸
+- 網路接收端的解碼與畫面顯示；連線驗證與加密
 - 虛擬延伸螢幕
 - 音訊、檔案傳輸與手把
 

@@ -6,7 +6,21 @@ add_executable(remote_desk WIN32
     src/h264_loopback.cpp
     src/h264_recorder.cpp
     src/main.cpp
+    src/network_transport.cpp
 )
+
+add_executable(remote_desk_receiver
+    src/network_transport.cpp
+    src/receiver_main.cpp
+)
+target_compile_features(remote_desk_receiver PRIVATE cxx_std_20)
+target_compile_definitions(remote_desk_receiver PRIVATE
+    UNICODE
+    _UNICODE
+    WIN32_LEAN_AND_MEAN
+    NOMINMAX
+)
+target_link_libraries(remote_desk_receiver PRIVATE ws2_32)
 
 target_compile_features(remote_desk PRIVATE cxx_std_20)
 target_compile_definitions(remote_desk PRIVATE
@@ -27,8 +41,10 @@ target_link_libraries(remote_desk PRIVATE
     oleaut32
     user32
     wmcodecdspuuid
+    ws2_32
 )
 
 if(MSVC)
     target_compile_options(remote_desk PRIVATE /W4 /permissive- /EHsc)
+    target_compile_options(remote_desk_receiver PRIVATE /W4 /permissive- /EHsc)
 endif()

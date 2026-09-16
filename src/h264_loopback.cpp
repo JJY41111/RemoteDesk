@@ -198,6 +198,14 @@ H264Loopback::~H264Loopback() {
     }
 }
 
+void H264Loopback::SetPacketCallback(std::function<void(
+    const std::vector<std::uint8_t>&, LONGLONG, LONGLONG)> callback) {
+    if (running_) {
+        throw std::runtime_error("Cannot change H.264 packet callback while running");
+    }
+    packetCallback_ = std::move(callback);
+}
+
 void H264Loopback::Start(ID3D11Device* device, ID3D11DeviceContext* context,
                          UINT sourceWidth, UINT sourceHeight, UINT outputWidth,
                          UINT outputHeight, UINT framesPerSecond, UINT bitrate) {
@@ -415,6 +423,10 @@ void H264Loopback::DrainEncoder() {
         packet.queuedAt = Clock::now();
         statistics_.encodedBytes += packet.bytes.size();
         ++statistics_.encodedFrames;
+        if (packetCallback_ && !packet.bytes.empty()) {
+            packetCallback_(packet.bytes, packet.sampleTime,
+                            packet.sampleDuration);
+        }
         encodedQueue_.push_back(std::move(packet));
     }
 }

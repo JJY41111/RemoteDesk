@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <vector>
 
 struct IMFTransform;
@@ -37,6 +38,8 @@ public:
                UINT bitrate = 4'000'000);
     bool ProcessFrameIfDue(ID3D11Texture2D* sourceTexture);
     void Stop();
+    void SetPacketCallback(std::function<void(
+        const std::vector<std::uint8_t>&, LONGLONG, LONGLONG)> callback);
 
     [[nodiscard]] bool IsRunning() const noexcept { return running_; }
     [[nodiscard]] const LoopbackStatistics& Statistics() const noexcept {
@@ -68,6 +71,8 @@ private:
     Microsoft::WRL::ComPtr<IMFTransform> decoder_;
 
     std::deque<EncodedPacket> encodedQueue_;
+    std::function<void(const std::vector<std::uint8_t>&, LONGLONG, LONGLONG)>
+        packetCallback_;
     std::vector<std::uint8_t> nv12Frame_;
 
     UINT sourceWidth_{};
