@@ -10,6 +10,7 @@ add_executable(remote_desk WIN32
 )
 
 add_executable(remote_desk_receiver
+    src/h264_network_decoder.cpp
     src/network_transport.cpp
     src/receiver_main.cpp
 )
@@ -20,7 +21,18 @@ target_compile_definitions(remote_desk_receiver PRIVATE
     WIN32_LEAN_AND_MEAN
     NOMINMAX
 )
-target_link_libraries(remote_desk_receiver PRIVATE ws2_32)
+target_link_libraries(remote_desk_receiver PRIVATE
+    gdi32
+    mf
+    mfplat
+    mfreadwrite
+    mfuuid
+    ole32
+    oleaut32
+    user32
+    wmcodecdspuuid
+    ws2_32
+)
 
 target_compile_features(remote_desk PRIVATE cxx_std_20)
 target_compile_definitions(remote_desk PRIVATE

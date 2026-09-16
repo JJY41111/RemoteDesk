@@ -3,7 +3,7 @@
 Windows 低延遲遠端桌面原型。目前使用 C++、Direct3D 11 與 DXGI Desktop
 Duplication API 擷取主要螢幕，並能透過 Windows Media Foundation 將畫面編碼成
 H.264 MP4，或在記憶體中完成 H.264 編碼、排隊與解碼 Loopback。
-目前也有僅限同一台電腦的 TCP 傳輸驗證。
+目前也能在同一台電腦上透過 TCP 將 H.264 畫面送到獨立接收視窗解碼顯示。
 
 ## 現階段功能
 
@@ -46,7 +46,7 @@ H.264 MP4，或在記憶體中完成 H.264 編碼、排隊與解碼 Loopback。
 .\out\remote_desk.exe --loopback-test
 ```
 
-若要驗證獨立程序間的 H.264 TCP 傳輸，先在一個終端執行：
+若要觀看獨立程序間的 H.264 TCP 畫面，先在一個終端執行：
 
 ```powershell
 .\out\remote_desk_receiver.exe
@@ -58,8 +58,9 @@ H.264 MP4，或在記憶體中完成 H.264 編碼、排隊與解碼 Loopback。
 .\out\remote_desk.exe --network-test
 ```
 
-兩個程序只透過 `127.0.0.1:5000` 連線。接收端目前核對封包邊界、幀數、
-資料量和校驗值，**尚未解碼或顯示畫面**。傳送測試詳見
+接收視窗會顯示 1280×720、30 fps 的解碼畫面。傳送測試五秒後結束；
+接收視窗保留最後一幀，可按 `Esc` 關閉。若要測完自動關閉，可在接收端
+命令後加上 `--test`。兩個程序只透過 `127.0.0.1:5000` 連線。驗證數據詳見
 [`docs/network-validation-2026-09-16.md`](docs/network-validation-2026-09-16.md)。
 
 也可以在 Developer PowerShell for Visual Studio 中使用 CMake：
@@ -101,7 +102,7 @@ H.264 影片不是全黑畫面。詳細證據與限制見
 2026-09-16 的五秒測試完成 150 次提交、150 次編碼與 150 次解碼。詳細數據
 與限制見 [`docs/loopback-validation-2026-09-16.md`](docs/loopback-validation-2026-09-16.md)。
 
-目前主視窗仍顯示擷取端原始預覽；獨立的 Client 解碼預覽視窗尚未實作。
+主視窗仍顯示擷取端原始預覽；獨立接收視窗顯示經 TCP 傳送並解碼的畫面。
 
 ## 畫面完整性修正
 
@@ -114,8 +115,7 @@ H.264 影片不是全黑畫面。詳細證據與限制見
 
 - 網際網路連線與 NAT 穿透
 - 遠端鍵盤與滑鼠控制
-- 獨立 Client 視窗與區域網路傳輸
-- 網路接收端的解碼與畫面顯示；連線驗證與加密
+- 跨電腦的區域網路傳輸與連線驗證、加密
 - 虛擬延伸螢幕
 - 音訊、檔案傳輸與手把
 

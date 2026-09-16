@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <condition_variable>
 #include <deque>
 #include <limits>
@@ -83,9 +84,30 @@ void SendAll(SOCKET socket, const char* data, std::size_t size) {
     }
 }
 
-bool ReceiveAll(SOCKET socket, char* data, std::size_t size) {
+void WaitReadable(SOCKET socket, const std::atomic_bool* stopRequested) {
+    for (;;) {
+        if (stopRequested != nullptr && stopRequested->load()) {
+            throw std::runtime_error("Receiver cancelled");
+        }
+        fd_set readable{};
+        FD_ZERO(&readable);
+        FD_SET(socket, &readable);
+        timeval timeout{0, 200000};
+        const int result = select(0, &readable, nullptr, nullptr, &timeout);
+        if (result == SOCKET_ERROR) {
+            throw SocketError("select");
+        }
+        if (result != 0) {
+            return;
+        }
+    }
+}
+
+bool ReceiveAll(SOCKET socket, char* data, std::size_t size,
+                const std::atomic_bool* stopRequested) {
     bool receivedAny = false;
     while (size != 0) {
+        WaitReadable(socket, stopRequested);
         const int chunk = static_cast<int>(
             std::min<std::size_t>(size, std::numeric_limits<int>::max()));
         const int received = recv(socket, data, chunk, 0);
@@ -211,21 +233,31 @@ void TcpPacketSender::StartLoopback(unsigned short port) {
         throw std::invalid_argument("Invalid or repeated TCP sender start");
     }
     auto state = std::make_unique<Impl>();
-    state->socket = SocketHandle(socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
-    if (state->socket.Get() == INVALID_SOCKET) {
-        throw SocketError("create sender socket");
-    }
-    const DWORD timeoutMilliseconds = 2000;
-    if (setsockopt(state->socket.Get(), SOL_SOCKET, SO_SNDTIMEO,
-                   reinterpret_cast<const char*>(&timeoutMilliseconds),
-                   sizeof(timeoutMilliseconds)) == SOCKET_ERROR) {
-        throw SocketError("set sender timeout");
-    }
     const sockaddr_in address = LoopbackAddress(port);
-    if (connect(state->socket.Get(),
-                reinterpret_cast<const sockaddr*>(&address), sizeof(address)) ==
-        SOCKET_ERROR) {
-        throw SocketError("connect to loopback receiver");
+    for (int attempt = 0; attempt < 20; ++attempt) {
+        state->socket = SocketHandle(socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+        if (state->socket.Get() == INVALID_SOCKET) {
+            throw SocketError("create sender socket");
+        }
+        const DWORD timeoutMilliseconds = 2000;
+        if (setsockopt(state->socket.Get(), SOL_SOCKET, SO_SNDTIMEO,
+                       reinterpret_cast<const char*>(&timeoutMilliseconds),
+                       sizeof(timeoutMilliseconds)) == SOCKET_ERROR) {
+            throw SocketError("set sender timeout");
+        }
+        if (connect(state->socket.Get(),
+                    reinterpret_cast<const sockaddr*>(&address),
+                    sizeof(address)) != SOCKET_ERROR) {
+            break;
+        }
+        const int error = WSAGetLastError();
+        state->socket.Close();
+        if (error != WSAECONNREFUSED || attempt == 19) {
+            throw std::runtime_error(
+                "connect to loopback receiver failed (WSA " +
+                std::to_string(error) + ")");
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     state->worker = std::thread([pointer = state.get()] { pointer->Run(); });
     impl_ = std::move(state);
@@ -271,7 +303,10 @@ PacketStatistics TcpPacketSender::Stop() {
     return statistics;
 }
 
-PacketStatistics ReceiveLoopbackPackets(unsigned short port) {
+PacketStatistics ReceiveLoopbackPackets(
+    unsigned short port,
+    const std::function<void(const EncodedNetworkPacket&)>& onPacket,
+    const std::atomic_bool* stopRequested) {
     if (port == 0) {
         throw std::invalid_argument("Invalid TCP receiver port");
     }
@@ -288,6 +323,7 @@ PacketStatistics ReceiveLoopbackPackets(unsigned short port) {
     if (listen(listener.Get(), 1) == SOCKET_ERROR) {
         throw SocketError("listen");
     }
+    WaitReadable(listener.Get(), stopRequested);
     SocketHandle connection(accept(listener.Get(), nullptr, nullptr));
     if (connection.Get() == INVALID_SOCKET) {
         throw SocketError("accept");
@@ -299,7 +335,7 @@ PacketStatistics ReceiveLoopbackPackets(unsigned short port) {
     for (;;) {
         std::array<std::uint32_t, kHeaderFields> header{};
         if (!ReceiveAll(connection.Get(), reinterpret_cast<char*>(header.data()),
-                        sizeof(header))) {
+                        sizeof(header), stopRequested)) {
             break;
         }
         for (auto& value : header) {
@@ -311,14 +347,25 @@ PacketStatistics ReceiveLoopbackPackets(unsigned short port) {
             header[4] != 720 || length == 0 || length > kMaxPacketBytes) {
             throw std::runtime_error("Invalid TCP H.264 packet header");
         }
-        std::vector<std::uint8_t> bytes(length);
-        if (!ReceiveAll(connection.Get(), reinterpret_cast<char*>(bytes.data()),
-                        bytes.size())) {
+        EncodedNetworkPacket packet;
+        packet.bytes.resize(length);
+        packet.width = header[3];
+        packet.height = header[4];
+        packet.sampleTime = (static_cast<std::uint64_t>(header[6]) << 32) |
+                            header[7];
+        packet.sampleDuration = (static_cast<std::uint64_t>(header[8]) << 32) |
+                                header[9];
+        if (!ReceiveAll(connection.Get(),
+                        reinterpret_cast<char*>(packet.bytes.data()),
+                        packet.bytes.size(), stopRequested)) {
             throw std::runtime_error("TCP stream ended before packet payload");
         }
         ++statistics.packets;
-        statistics.bytes += bytes.size();
-        UpdateChecksum(statistics, bytes);
+        statistics.bytes += packet.bytes.size();
+        UpdateChecksum(statistics, packet.bytes);
+        if (onPacket) {
+            onPacket(packet);
+        }
     }
     if (statistics.packets == 0) {
         throw std::runtime_error("No H.264 packets were received");

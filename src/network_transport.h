@@ -1,6 +1,8 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -10,6 +12,14 @@ struct PacketStatistics {
     std::uint64_t packets{};
     std::uint64_t bytes{};
     std::uint64_t checksum{14695981039346656037ULL};
+};
+
+struct EncodedNetworkPacket {
+    std::vector<std::uint8_t> bytes;
+    std::uint64_t sampleTime{};
+    std::uint64_t sampleDuration{};
+    unsigned width{};
+    unsigned height{};
 };
 
 class TcpPacketSender {
@@ -31,6 +41,9 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-PacketStatistics ReceiveLoopbackPackets(unsigned short port);
+PacketStatistics ReceiveLoopbackPackets(
+    unsigned short port,
+    const std::function<void(const EncodedNetworkPacket&)>& onPacket = {},
+    const std::atomic_bool* stopRequested = nullptr);
 
 } // namespace remotedesk

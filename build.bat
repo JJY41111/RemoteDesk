@@ -32,7 +32,9 @@ if errorlevel 1 exit /b %errorlevel%
 cl.exe /nologo /std:c++20 /EHsc /W4 /permissive- ^
     /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /DNOMINMAX ^
     /Fe:out\remote_desk_receiver.exe src\receiver_main.cpp ^
-    src\network_transport.cpp /link ws2_32.lib
+    src\network_transport.cpp src\h264_network_decoder.cpp ^
+    /link ws2_32.lib user32.lib gdi32.lib ole32.lib oleaut32.lib ^
+    mf.lib mfplat.lib mfreadwrite.lib mfuuid.lib wmcodecdspuuid.lib
 
 if errorlevel 1 exit /b %errorlevel%
 
