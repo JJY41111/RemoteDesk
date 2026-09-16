@@ -11,13 +11,15 @@ struct NetworkDecodeStatistics {
     std::uint64_t inputPackets{};
     std::uint64_t decodedFrames{};
     bool decodedFrameContainsImage{};
+    bool lowLatencyEnabled{};
     double averageDecodeMilliseconds{};
 };
 
 class H264NetworkDecoder {
 public:
     using FrameCallback =
-        std::function<void(std::vector<std::uint8_t>&&, unsigned, unsigned)>;
+        std::function<void(std::vector<std::uint8_t>&&, unsigned, unsigned,
+                           std::uint64_t)>;
 
     H264NetworkDecoder();
     H264NetworkDecoder(const H264NetworkDecoder&) = delete;

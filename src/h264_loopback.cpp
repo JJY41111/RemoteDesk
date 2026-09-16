@@ -186,6 +186,19 @@ void SetOptionalBooleanCodecProperty(IMFTransform* transform,
     VariantClear(&setting);
 }
 
+void SetOptionalDecoderLowLatency(IMFTransform* transform) {
+    ComPtr<ICodecAPI> codecApi;
+    if (FAILED(transform->QueryInterface(IID_PPV_ARGS(&codecApi)))) {
+        return;
+    }
+    VARIANT setting;
+    VariantInit(&setting);
+    setting.vt = VT_UI4;
+    setting.ulVal = 1;
+    codecApi->SetValue(&CODECAPI_AVLowLatencyMode, &setting);
+    VariantClear(&setting);
+}
+
 } // namespace
 
 H264Loopback::~H264Loopback() {
@@ -234,8 +247,7 @@ void H264Loopback::Start(ID3D11Device* device, ID3D11DeviceContext* context,
 
         SetOptionalBooleanCodecProperty(encoder_.Get(), CODECAPI_AVLowLatencyMode,
                                         true);
-        SetOptionalBooleanCodecProperty(decoder_.Get(), CODECAPI_AVLowLatencyMode,
-                                        true);
+        SetOptionalDecoderLowLatency(decoder_.Get());
 
         auto encodedType = CreateVideoType(MFVideoFormat_H264, outputWidth,
                                            outputHeight, framesPerSecond);

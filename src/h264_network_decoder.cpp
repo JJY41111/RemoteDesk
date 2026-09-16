@@ -1,6 +1,7 @@
 #include "h264_network_decoder.h"
 
 #include <windows.h>
+#include <codecapi.h>
 #include <mfapi.h>
 #include <mferror.h>
 #include <mfidl.h>
@@ -181,7 +182,10 @@ struct H264NetworkDecoder::Impl {
             contiguous->Unlock();
             statistics.decodedFrameContainsImage |= containsImage;
             ++statistics.decodedFrames;
-            onFrame(std::move(bgra), width, height);
+            LONGLONG sampleTime = -1;
+            produced->GetSampleTime(&sampleTime);
+            onFrame(std::move(bgra), width, height,
+                    static_cast<std::uint64_t>(sampleTime));
         }
     }
 };
@@ -215,6 +219,16 @@ void H264NetworkDecoder::Start(unsigned width, unsigned height,
                                CLSCTX_INPROC_SERVER,
                                IID_PPV_ARGS(&state->decoder)),
               "Create network H.264 decoder");
+        ComPtr<ICodecAPI> codecApi;
+        if (SUCCEEDED(state->decoder.As(&codecApi))) {
+            VARIANT setting;
+            VariantInit(&setting);
+            setting.vt = VT_UI4;
+            setting.ulVal = 1;
+            state->statistics.lowLatencyEnabled = SUCCEEDED(
+                codecApi->SetValue(&CODECAPI_AVLowLatencyMode, &setting));
+            VariantClear(&setting);
+        }
         auto inputType =
             VideoType(MFVideoFormat_H264_ES, width, height, framesPerSecond);
         state->outputType =

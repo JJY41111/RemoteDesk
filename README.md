@@ -62,6 +62,9 @@ H.264 MP4，或在記憶體中完成 H.264 編碼、排隊與解碼 Loopback。
 接收視窗保留最後一幀，可按 `Esc` 關閉。若要測完自動關閉，可在接收端
 命令後加上 `--test`。兩個程序只透過 `127.0.0.1:5000` 連線。驗證數據詳見
 [`docs/network-validation-2026-09-16.md`](docs/network-validation-2026-09-16.md)。
+接收端已啟用 H.264 解碼器的低延遲模式，並在 `receiver.log` 記錄同機
+「封包排入傳送佇列至接收視窗完成 CPU 繪製」的延遲；實測與量測限制見
+[`docs/latency-validation-2026-09-16.md`](docs/latency-validation-2026-09-16.md)。
 
 也可以在 Developer PowerShell for Visual Studio 中使用 CMake：
 

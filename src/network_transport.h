@@ -20,6 +20,8 @@ struct EncodedNetworkPacket {
     std::uint64_t sampleDuration{};
     unsigned width{};
     unsigned height{};
+    std::uint64_t senderQueuedQpc{};
+    std::uint64_t receivedQpc{};
 };
 
 class TcpPacketSender {

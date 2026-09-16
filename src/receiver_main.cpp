@@ -4,11 +4,17 @@
 #include "h264_network_decoder.h"
 #include "network_transport.h"
 
+#include <algorithm>
 #include <atomic>
+#include <cstdint>
+#include <deque>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <mutex>
+#include <numeric>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -20,26 +26,53 @@ constexpr wchar_t kViewerClass[] = L"RemoteDeskReceiverWindow";
 constexpr UINT kFrameReady = WM_APP + 1;
 constexpr UINT kStreamDone = WM_APP + 2;
 constexpr UINT_PTR kCancelTestTimer = 1;
+constexpr std::size_t kMaxLatencySamples = 1800;
+
+struct FrameSnapshot {
+    std::vector<std::uint8_t> bgra;
+    std::uint64_t serial{};
+    std::uint64_t senderQueuedQpc{};
+    std::uint64_t receivedQpc{};
+    std::uint64_t decodedQpc{};
+};
+
+struct LatencySample {
+    double networkMilliseconds{};
+    double decodeMilliseconds{};
+    double uiMilliseconds{};
+    double totalMilliseconds{};
+};
 
 struct ViewerState {
     HWND window{};
     std::mutex mutex;
-    std::shared_ptr<const std::vector<std::uint8_t>> latestFrame;
+    std::shared_ptr<const FrameSnapshot> latestFrame;
     remotedesk::PacketStatistics packets;
     remotedesk::NetworkDecodeStatistics decoding;
     std::string error;
     std::atomic_bool stopRequested{};
     bool autoCloseOnDone{};
     bool successful{};
+    std::uint64_t timingMatches{};
+    std::uint64_t paintedFrames{};
+    std::uint64_t lastPaintedSerial{};
+    double qpcTicksPerMillisecond{};
+    std::deque<LatencySample> recentLatencySamples;
 };
 
+std::uint64_t CurrentQpc() noexcept {
+    LARGE_INTEGER value{};
+    QueryPerformanceCounter(&value);
+    return static_cast<std::uint64_t>(value.QuadPart);
+}
+
 void SaveTestFrame(ViewerState& state) {
-    std::shared_ptr<const std::vector<std::uint8_t>> frame;
+    std::shared_ptr<const FrameSnapshot> frame;
     {
         std::lock_guard lock(state.mutex);
         frame = state.latestFrame;
     }
-    if (!frame || frame->size() != 1280u * 720u * 4u) {
+    if (!frame || frame->bgra.size() != 1280u * 720u * 4u) {
         throw std::runtime_error("No complete preview frame to save");
     }
     BITMAPFILEHEADER fileHeader{};
@@ -47,7 +80,7 @@ void SaveTestFrame(ViewerState& state) {
     fileHeader.bfOffBits =
         sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER);
     fileHeader.bfSize = fileHeader.bfOffBits +
-                        static_cast<DWORD>(frame->size());
+                        static_cast<DWORD>(frame->bgra.size());
     BITMAPINFOHEADER bitmapHeader{};
     bitmapHeader.biSize = sizeof(BITMAPINFOHEADER);
     bitmapHeader.biWidth = 1280;
@@ -55,7 +88,7 @@ void SaveTestFrame(ViewerState& state) {
     bitmapHeader.biPlanes = 1;
     bitmapHeader.biBitCount = 32;
     bitmapHeader.biCompression = BI_RGB;
-    bitmapHeader.biSizeImage = static_cast<DWORD>(frame->size());
+    bitmapHeader.biSizeImage = static_cast<DWORD>(frame->bgra.size());
 
     std::ofstream image("out\\receiver_last_frame.bmp",
                         std::ios::binary | std::ios::trunc);
@@ -63,8 +96,8 @@ void SaveTestFrame(ViewerState& state) {
                 sizeof(fileHeader));
     image.write(reinterpret_cast<const char*>(&bitmapHeader),
                 sizeof(bitmapHeader));
-    image.write(reinterpret_cast<const char*>(frame->data()),
-                static_cast<std::streamsize>(frame->size()));
+    image.write(reinterpret_cast<const char*>(frame->bgra.data()),
+                static_cast<std::streamsize>(frame->bgra.size()));
     if (!image) {
         throw std::runtime_error("Save receiver test frame failed");
     }
@@ -91,7 +124,7 @@ LRESULT CALLBACK ViewerWindowProc(HWND window, UINT message, WPARAM wParam,
         HDC dc = BeginPaint(window, &paint);
         RECT client{};
         GetClientRect(window, &client);
-        std::shared_ptr<const std::vector<std::uint8_t>> frame;
+        std::shared_ptr<const FrameSnapshot> frame;
         if (state != nullptr) {
             std::lock_guard lock(state->mutex);
             frame = state->latestFrame;
@@ -105,7 +138,7 @@ LRESULT CALLBACK ViewerWindowProc(HWND window, UINT message, WPARAM wParam,
             bitmap.bmiHeader.biBitCount = 32;
             bitmap.bmiHeader.biCompression = BI_RGB;
             StretchDIBits(dc, 0, 0, client.right, client.bottom, 0, 0, 1280,
-                          720, frame->data(), &bitmap, DIB_RGB_COLORS,
+                          720, frame->bgra.data(), &bitmap, DIB_RGB_COLORS,
                           SRCCOPY);
         } else {
             FillRect(dc, &client,
@@ -118,6 +151,36 @@ LRESULT CALLBACK ViewerWindowProc(HWND window, UINT message, WPARAM wParam,
                     static_cast<int>(sizeof(waiting) / sizeof(wchar_t) - 1));
         }
         EndPaint(window, &paint);
+        if (state != nullptr && frame &&
+            frame->serial != state->lastPaintedSerial) {
+            state->lastPaintedSerial = frame->serial;
+            ++state->paintedFrames;
+            const std::uint64_t paintedQpc = CurrentQpc();
+            if (frame->senderQueuedQpc != 0 &&
+                frame->senderQueuedQpc <= frame->receivedQpc &&
+                frame->receivedQpc <= frame->decodedQpc &&
+                frame->decodedQpc <= paintedQpc) {
+                const double ticks = state->qpcTicksPerMillisecond;
+                const LatencySample sample{
+                    (frame->receivedQpc - frame->senderQueuedQpc) / ticks,
+                    (frame->decodedQpc - frame->receivedQpc) / ticks,
+                    (paintedQpc - frame->decodedQpc) / ticks,
+                    (paintedQpc - frame->senderQueuedQpc) / ticks};
+                state->recentLatencySamples.push_back(sample);
+                if (state->recentLatencySamples.size() >
+                    kMaxLatencySamples) {
+                    state->recentLatencySamples.pop_front();
+                }
+                if (state->paintedFrames % 30 == 0) {
+                    const std::wstring title =
+                        L"RemoteDesk Receiver | packet-to-paint " +
+                        std::to_wstring(
+                            static_cast<int>(sample.totalMilliseconds)) +
+                        L" ms";
+                    SetWindowText(window, title.c_str());
+                }
+            }
+        }
         return 0;
     }
     case kFrameReady:
@@ -134,6 +197,8 @@ LRESULT CALLBACK ViewerWindowProc(HWND window, UINT message, WPARAM wParam,
             }
             SetWindowText(window, title.c_str());
             if (state->autoCloseOnDone) {
+                InvalidateRect(window, nullptr, FALSE);
+                UpdateWindow(window);
                 DestroyWindow(window);
             }
         }
@@ -171,11 +236,29 @@ void ReceiveAndDecode(ViewerState& state) {
 
     try {
         remotedesk::H264NetworkDecoder decoder;
+        struct PacketTiming {
+            std::uint64_t senderQueuedQpc{};
+            std::uint64_t receivedQpc{};
+        };
+        std::map<std::uint64_t, PacketTiming> timingBySample;
+        std::uint64_t nextFrameSerial = 0;
         decoder.Start(1280, 720, 30,
-                      [&state](std::vector<std::uint8_t>&& bgra, unsigned,
-                               unsigned) {
-                          auto frame = std::make_shared<
-                              const std::vector<std::uint8_t>>(std::move(bgra));
+                      [&state, &timingBySample, &nextFrameSerial](
+                          std::vector<std::uint8_t>&& bgra, unsigned,
+                          unsigned, std::uint64_t sampleTime) {
+                          auto frame = std::make_shared<FrameSnapshot>();
+                          frame->bgra = std::move(bgra);
+                          frame->serial = ++nextFrameSerial;
+                          const auto timing = timingBySample.find(sampleTime);
+                          if (timing != timingBySample.end()) {
+                              frame->senderQueuedQpc =
+                                  timing->second.senderQueuedQpc;
+                              frame->receivedQpc =
+                                  timing->second.receivedQpc;
+                              timingBySample.erase(timing);
+                              ++state.timingMatches;
+                          }
+                          frame->decodedQpc = CurrentQpc();
                           {
                               std::lock_guard lock(state.mutex);
                               state.latestFrame = std::move(frame);
@@ -185,7 +268,13 @@ void ReceiveAndDecode(ViewerState& state) {
 
         const auto packets = remotedesk::ReceiveLoopbackPackets(
             5000,
-            [&decoder](const remotedesk::EncodedNetworkPacket& packet) {
+            [&decoder, &timingBySample](
+                const remotedesk::EncodedNetworkPacket& packet) {
+                timingBySample[packet.sampleTime] = {
+                    packet.senderQueuedQpc, packet.receivedQpc};
+                while (timingBySample.size() > 128) {
+                    timingBySample.erase(timingBySample.begin());
+                }
                 decoder.DecodePacket(packet.bytes, packet.sampleTime,
                                      packet.sampleDuration);
             },
@@ -206,10 +295,17 @@ void ReceiveAndDecode(ViewerState& state) {
             << ", checksum=" << packets.checksum
             << ", decoded=" << decoding.decodedFrames
             << ", image=yes, decode_avg_ms="
-            << decoding.averageDecodeMilliseconds << '\n';
+            << decoding.averageDecodeMilliseconds
+            << ", low_latency="
+            << (decoding.lowLatencyEnabled ? "yes" : "no")
+            << ", timing_matches=" << state.timingMatches << '\n';
         std::cout << "received=" << packets.packets << ", bytes="
                   << packets.bytes << ", checksum=" << packets.checksum
-                  << ", decoded=" << decoding.decodedFrames << ", image=yes\n";
+                  << ", decoded=" << decoding.decodedFrames
+                  << ", low_latency="
+                  << (decoding.lowLatencyEnabled ? "yes" : "no")
+                  << ", timing_matches=" << state.timingMatches
+                  << ", image=yes\n";
         {
             std::lock_guard lock(state.mutex);
             state.packets = packets;
@@ -264,6 +360,13 @@ int main(int argc, char* argv[]) {
     try {
         ViewerState state;
         state.autoCloseOnDone = autoClose;
+        LARGE_INTEGER frequency{};
+        if (!QueryPerformanceFrequency(&frequency) ||
+            frequency.QuadPart <= 0) {
+            throw std::runtime_error("QueryPerformanceFrequency failed");
+        }
+        state.qpcTicksPerMillisecond =
+            static_cast<double>(frequency.QuadPart) / 1000.0;
         state.window = CreateViewerWindow(GetModuleHandle(nullptr), state);
         ShowWindow(state.window, SW_SHOW);
         UpdateWindow(state.window);
@@ -283,6 +386,41 @@ int main(int argc, char* argv[]) {
         }
         state.stopRequested = true;
         receiver.join();
+        if (state.successful) {
+            std::ofstream log("receiver.log", std::ios::app);
+            const std::size_t timed = state.recentLatencySamples.size();
+            log << "painted=" << state.paintedFrames << ", timed=" << timed;
+            if (timed != 0) {
+                std::vector<double> sorted;
+                sorted.reserve(timed);
+                double networkTotal = 0.0;
+                double decodeTotal = 0.0;
+                double uiTotal = 0.0;
+                for (const auto& sample : state.recentLatencySamples) {
+                    sorted.push_back(sample.totalMilliseconds);
+                    networkTotal += sample.networkMilliseconds;
+                    decodeTotal += sample.decodeMilliseconds;
+                    uiTotal += sample.uiMilliseconds;
+                }
+                std::sort(sorted.begin(), sorted.end());
+                const double count = static_cast<double>(timed);
+                const double total = std::accumulate(
+                    sorted.begin(), sorted.end(), 0.0);
+                const std::size_t p95Index = (95 * timed + 99) / 100 - 1;
+                log << std::fixed << std::setprecision(2)
+                    << ", queue_network_avg_ms="
+                    << networkTotal / count
+                    << ", decode_convert_avg_ms="
+                    << decodeTotal / count
+                    << ", ui_avg_ms=" << uiTotal / count
+                    << ", packet_to_paint_avg_ms=" << total / count
+                    << ", packet_to_paint_p95_ms=" << sorted[p95Index]
+                    << ", packet_to_paint_max_ms=" << sorted.back();
+            }
+            log << '\n';
+            std::cout << "painted=" << state.paintedFrames
+                      << ", timed=" << timed << '\n';
+        }
         if (!state.error.empty()) {
             return 1;
         }

@@ -1,5 +1,6 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <windows.h>
 
 #include "network_transport.h"
 
@@ -19,8 +20,8 @@ namespace remotedesk {
 namespace {
 
 constexpr std::uint32_t kMagic = 0x5244534B; // RDSK
-constexpr std::uint32_t kVersion = 1;
-constexpr std::size_t kHeaderFields = 10;
+constexpr std::uint32_t kVersion = 2;
+constexpr std::size_t kHeaderFields = 12;
 constexpr std::size_t kMaxPacketBytes = 2 * 1024 * 1024;
 constexpr std::size_t kMaxQueuedPackets = 16;
 
@@ -153,6 +154,7 @@ struct TcpPacketSender::Impl {
         std::uint32_t sequence{};
         unsigned width{};
         unsigned height{};
+        std::uint64_t queuedQpc{};
     };
 
     WinsockSession winsock;
@@ -197,6 +199,8 @@ struct TcpPacketSender::Impl {
                     htonl(low(packet.sampleTime)),
                     htonl(high(packet.sampleDuration)),
                     htonl(low(packet.sampleDuration)),
+                    htonl(high(packet.queuedQpc)),
+                    htonl(low(packet.queuedQpc)),
                 };
                 SendAll(socket.Get(), reinterpret_cast<const char*>(header.data()),
                         sizeof(header));
@@ -278,8 +282,14 @@ void TcpPacketSender::QueuePacket(const std::vector<std::uint8_t>& bytes,
         if (impl_->stopping || impl_->queue.size() >= kMaxQueuedPackets) {
             throw std::runtime_error("TCP sender queue is full or stopped");
         }
+        LARGE_INTEGER queuedQpc{};
+        if (!QueryPerformanceCounter(&queuedQpc)) {
+            throw std::runtime_error("Query sender performance counter failed");
+        }
         impl_->queue.push_back({bytes, sampleTime, sampleDuration,
-                                impl_->nextSequence++, width, height});
+                                impl_->nextSequence++, width, height,
+                                static_cast<std::uint64_t>(
+                                    queuedQpc.QuadPart)});
     }
     impl_->ready.notify_one();
 }
@@ -355,11 +365,19 @@ PacketStatistics ReceiveLoopbackPackets(
                             header[7];
         packet.sampleDuration = (static_cast<std::uint64_t>(header[8]) << 32) |
                                 header[9];
+        packet.senderQueuedQpc =
+            (static_cast<std::uint64_t>(header[10]) << 32) | header[11];
         if (!ReceiveAll(connection.Get(),
                         reinterpret_cast<char*>(packet.bytes.data()),
                         packet.bytes.size(), stopRequested)) {
             throw std::runtime_error("TCP stream ended before packet payload");
         }
+        LARGE_INTEGER receivedQpc{};
+        if (!QueryPerformanceCounter(&receivedQpc)) {
+            throw std::runtime_error("Query receiver performance counter failed");
+        }
+        packet.receivedQpc =
+            static_cast<std::uint64_t>(receivedQpc.QuadPart);
         ++statistics.packets;
         statistics.bytes += packet.bytes.size();
         UpdateChecksum(statistics, packet.bytes);
