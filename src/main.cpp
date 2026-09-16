@@ -20,8 +20,13 @@ namespace {
 
 constexpr wchar_t kWindowClassName[] = L"RemoteDeskCaptureWindow";
 constexpr wchar_t kWindowTitle[] = L"RemoteDesk - Desktop Capture";
+constexpr UINT_PTR kMoveCaptureTimer = 1;
 bool gToggleRecordingRequested = false;
 bool gToggleLoopbackRequested = false;
+std::string gMoveCaptureError;
+unsigned long long gMoveCaptureFrames = 0;
+
+void CaptureWhileMoving(HWND window);
 
 void Log(const std::string& message) {
     std::ofstream stream("runtime.log", std::ios::app);
@@ -74,7 +79,25 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             return 0;
         }
         break;
+    case WM_ENTERSIZEMOVE:
+        gMoveCaptureFrames = 0;
+        if (SetTimer(window, kMoveCaptureTimer, 16, nullptr) == 0) {
+            Log("capture: failed to start move timer");
+        }
+        return 0;
+    case WM_EXITSIZEMOVE:
+        KillTimer(window, kMoveCaptureTimer);
+        Log("capture: move timer processed " +
+            std::to_string(gMoveCaptureFrames) + " frames");
+        return 0;
+    case WM_TIMER:
+        if (wParam == kMoveCaptureTimer) {
+            CaptureWhileMoving(window);
+            return 0;
+        }
+        break;
     case WM_DESTROY:
+        KillTimer(window, kMoveCaptureTimer);
         PostQuitMessage(0);
         return 0;
     default:
@@ -163,9 +186,13 @@ public:
         latestFrameDescription.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
         latestFrameDescription.SampleDesc.Count = 1;
         latestFrameDescription.Usage = D3D11_USAGE_DEFAULT;
+        latestFrameDescription.BindFlags = D3D11_BIND_RENDER_TARGET;
+        latestFrameDescription.MiscFlags = D3D11_RESOURCE_MISC_GDI_COMPATIBLE;
         ThrowIfFailed(device_->CreateTexture2D(&latestFrameDescription, nullptr,
                                                &latestFrameTexture_),
                       "Create latest-frame texture");
+        ThrowIfFailed(latestFrameTexture_.As(&latestFrameSurface_),
+                      "Query latest-frame GDI surface");
         Log("initialize: complete");
 
         statisticsStart_ = Clock::now();
@@ -210,6 +237,13 @@ public:
                       "Query desktop texture");
 
         context_->CopyResource(latestFrameTexture_.Get(), desktopTexture.Get());
+        if (frameInfo.LastMouseUpdateTime.QuadPart != 0) {
+            pointerVisible_ = frameInfo.PointerPosition.Visible != FALSE;
+            if (pointerVisible_) {
+                pointerPosition_ = frameInfo.PointerPosition.Position;
+            }
+        }
+        DrawPointerIfNeeded();
         context_->CopyResource(backBuffer_.Get(), latestFrameTexture_.Get());
         ThrowIfFailed(swapChain_->Present(0, 0), "Present");
 
@@ -232,6 +266,35 @@ public:
 
 private:
     using Clock = std::chrono::steady_clock;
+
+    void DrawPointerIfNeeded() {
+        if (!pointerVisible_) {
+            return;
+        }
+
+        CURSORINFO cursorInfo{};
+        cursorInfo.cbSize = sizeof(cursorInfo);
+        if (!GetCursorInfo(&cursorInfo) ||
+            (cursorInfo.flags & CURSOR_SHOWING) == 0 ||
+            cursorInfo.hCursor == nullptr) {
+            return;
+        }
+
+        HDC dc{};
+        ThrowIfFailed(latestFrameSurface_->GetDC(FALSE, &dc),
+                      "Get latest-frame GDI DC");
+        const BOOL drawn = DrawIconEx(dc, pointerPosition_.x, pointerPosition_.y,
+                                     cursorInfo.hCursor, 0, 0, 0, nullptr,
+                                     DI_NORMAL);
+        const HRESULT releaseResult = latestFrameSurface_->ReleaseDC(nullptr);
+        ThrowIfFailed(releaseResult, "Release latest-frame GDI DC");
+        if (!drawn) {
+            throw std::runtime_error("Draw desktop pointer failed");
+        }
+        if (++pointerCompositedFrames_ == 1) {
+            Log("capture: first pointer composed");
+        }
+    }
 
     void ProcessRecordingRequest() {
         if (!gToggleRecordingRequested) {
@@ -339,7 +402,8 @@ private:
             const auto encodedFrames = recorder_.EncodedFrames();
             recorder_.Stop();
             Log("recording test: completed after " +
-                std::to_string(encodedFrames) + " frames");
+                std::to_string(encodedFrames) + " frames, pointer_draws=" +
+                std::to_string(pointerCompositedFrames_));
             PostMessage(window_, WM_CLOSE, 0, 0);
         }
     }
@@ -420,8 +484,12 @@ private:
     ComPtr<IDXGISwapChain1> swapChain_;
     ComPtr<ID3D11Texture2D> backBuffer_;
     ComPtr<ID3D11Texture2D> latestFrameTexture_;
+    ComPtr<IDXGISurface1> latestFrameSurface_;
     remotedesk::H264Recorder recorder_;
     remotedesk::H264Loopback loopback_;
+    POINT pointerPosition_{};
+    bool pointerVisible_{};
+    unsigned long long pointerCompositedFrames_{};
 
     Clock::time_point statisticsStart_{};
     unsigned long long frames_{};
@@ -435,6 +503,21 @@ private:
     bool automaticLoopbackStarted_{};
     Clock::time_point automaticLoopbackStart_{};
 };
+
+DesktopCaptureApp* gApplication = nullptr;
+
+void CaptureWhileMoving(HWND window) {
+    if (gApplication == nullptr || !gMoveCaptureError.empty()) {
+        return;
+    }
+    try {
+        gApplication->CaptureNextFrame();
+        ++gMoveCaptureFrames;
+    } catch (const std::exception& error) {
+        gMoveCaptureError = error.what();
+        PostMessage(window, WM_CLOSE, 0, 0);
+    }
+}
 
 HWND CreateMainWindow(HINSTANCE instance) {
     WNDCLASSEX windowClass{};
@@ -494,6 +577,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine,
             wcsstr(commandLine, L"--loopback-test") != nullptr;
         application.Initialize(window, automaticRecordingTest,
                                automaticLoopbackTest);
+        gApplication = &application;
 
         ShowWindow(window, showCommand);
         UpdateWindow(window);
@@ -514,6 +598,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine,
             if (running) {
                 application.CaptureNextFrame();
             }
+        }
+
+        gApplication = nullptr;
+        if (!gMoveCaptureError.empty()) {
+            throw std::runtime_error(gMoveCaptureError);
         }
 
         return static_cast<int>(message.wParam);

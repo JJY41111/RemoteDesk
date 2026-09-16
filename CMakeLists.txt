@@ -19,11 +19,13 @@ target_compile_definitions(remote_desk PRIVATE
 target_link_libraries(remote_desk PRIVATE
     d3d11
     dxgi
+    gdi32
     mf
     mfplat
     mfreadwrite
     mfuuid
     oleaut32
+    user32
     wmcodecdspuuid
 )
 
