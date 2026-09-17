@@ -111,12 +111,20 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
 class DesktopCaptureApp {
 public:
     void Initialize(HWND window, bool automaticRecordingTest,
-                    bool automaticLoopbackTest, bool automaticNetworkTest) {
+                    bool automaticLoopbackTest, bool automaticNetworkTest,
+                    bool continuousNetwork) {
         window_ = window;
         automaticRecordingTest_ = automaticRecordingTest;
         automaticLoopbackTest_ = automaticLoopbackTest;
         automaticNetworkTest_ = automaticNetworkTest;
+        continuousNetwork_ = continuousNetwork;
         Log("initialize: start");
+
+        if ((automaticNetworkTest_ || continuousNetwork_) &&
+            !SetWindowDisplayAffinity(window_, WDA_EXCLUDEFROMCAPTURE)) {
+            Log("network: warning: capture window exclusion failed (Win32 " +
+                std::to_string(GetLastError()) + ")");
+        }
 
         ThrowIfFailed(CreateDXGIFactory1(IID_PPV_ARGS(&factory_)),
                       "CreateDXGIFactory1");
@@ -198,6 +206,12 @@ public:
         Log("initialize: complete");
 
         statisticsStart_ = Clock::now();
+    }
+
+    void Shutdown() {
+        if (automaticNetworkStarted_ && loopback_.IsRunning()) {
+            StopNetwork(continuousNetwork_ ? "network live" : "network test");
+        }
     }
 
     void CaptureNextFrame() {
@@ -344,6 +358,12 @@ private:
         }
         gToggleLoopbackRequested = false;
 
+        if (automaticNetworkTest_ || continuousNetwork_) {
+            MessageBeep(MB_ICONWARNING);
+            Log("loopback: ignored while network streaming is active");
+            return;
+        }
+
         if (loopback_.IsRunning()) {
             loopback_.Stop();
             LogLoopbackResult("loopback: stopped");
@@ -383,8 +403,20 @@ private:
                 << stats.averageEncodeMilliseconds << ", queue_avg_ms="
                 << stats.averageQueueMilliseconds << ", decode_avg_ms="
                 << stats.averageDecodeMilliseconds << ", image="
-                << (stats.decodedFrameContainsImage ? "yes" : "no");
+                << (loopback_.DecodesLocally()
+                        ? (stats.decodedFrameContainsImage ? "yes" : "no")
+                        : "n/a (receiver decodes)");
         Log(message.str());
+    }
+
+    void StopNetwork(const char* prefix) {
+        loopback_.Stop();
+        const auto network = networkSender_.Stop();
+        LogLoopbackResult(std::string(prefix) + ": codec completed");
+        Log(std::string(prefix) + ": sent=" +
+            std::to_string(network.packets) + ", bytes=" +
+            std::to_string(network.bytes) + ", checksum=" +
+            std::to_string(network.checksum));
     }
 
     void ProcessAutomaticRecording() {
@@ -438,7 +470,8 @@ private:
     }
 
     void ProcessAutomaticNetwork() {
-        if (!automaticNetworkTest_ || !firstFrameCaptured_) {
+        if ((!automaticNetworkTest_ && !continuousNetwork_) ||
+            !firstFrameCaptured_) {
             return;
         }
 
@@ -452,23 +485,24 @@ private:
                         static_cast<std::uint64_t>(sampleDuration),
                         loopback_.OutputWidth(), loopback_.OutputHeight());
                 });
-            loopback_.Start(device_.Get(), context_.Get(), width_, height_);
+            loopback_.Start(device_.Get(), context_.Get(), width_, height_,
+                            1280, 720, 30, 4'000'000, false);
             automaticNetworkStarted_ = true;
             automaticNetworkStart_ = Clock::now();
-            Log("network test: connected to 127.0.0.1:5000");
+            Log(std::string(continuousNetwork_ ? "network live" :
+                                             "network test") +
+                ": connected to 127.0.0.1:5000");
             return;
         }
 
+        if (continuousNetwork_) {
+            return;
+        }
         const double elapsedSeconds = std::chrono::duration<double>(
                                           Clock::now() - automaticNetworkStart_)
                                           .count();
         if (loopback_.IsRunning() && elapsedSeconds >= 5.0) {
-            loopback_.Stop();
-            const auto network = networkSender_.Stop();
-            LogLoopbackResult("network test: codec completed");
-            Log("network test: sent=" + std::to_string(network.packets) +
-                ", bytes=" + std::to_string(network.bytes) +
-                ", checksum=" + std::to_string(network.checksum));
+            StopNetwork("network test");
             PostMessage(window_, WM_CLOSE, 0, 0);
         }
     }
@@ -496,11 +530,18 @@ private:
                   << L" frames";
         } else if (loopback_.IsRunning()) {
             const auto& loopbackStats = loopback_.Statistics();
-            title << L" | LOOP 720p enc " << loopbackStats.encodedFrames
-                  << L" dec " << loopbackStats.decodedFrames << L" | "
-                  << std::setprecision(1)
-                  << loopbackStats.averageEncodeMilliseconds << L"/"
-                  << loopbackStats.averageDecodeMilliseconds << L" ms";
+            if (automaticNetworkStarted_) {
+                title << L" | NET 720p enc " << loopbackStats.encodedFrames
+                      << L" | convert/encode " << std::setprecision(1)
+                      << loopbackStats.averageConversionMilliseconds << L"/"
+                      << loopbackStats.averageEncodeMilliseconds << L" ms";
+            } else {
+                title << L" | LOOP 720p enc " << loopbackStats.encodedFrames
+                      << L" dec " << loopbackStats.decodedFrames << L" | "
+                      << std::setprecision(1)
+                      << loopbackStats.averageEncodeMilliseconds << L"/"
+                      << loopbackStats.averageDecodeMilliseconds << L" ms";
+            }
         } else {
             title << L" | R: record | L: loopback";
         }
@@ -546,6 +587,7 @@ private:
     bool automaticLoopbackStarted_{};
     Clock::time_point automaticLoopbackStart_{};
     bool automaticNetworkTest_{};
+    bool continuousNetwork_{};
     bool automaticNetworkStarted_{};
     Clock::time_point automaticNetworkStart_{};
 };
@@ -624,8 +666,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine,
         const bool automaticNetworkTest =
             commandLine != nullptr &&
             wcsstr(commandLine, L"--network-test") != nullptr;
+        const bool continuousNetwork =
+            commandLine != nullptr &&
+            wcsstr(commandLine, L"--network-live") != nullptr;
+        if (static_cast<int>(automaticRecordingTest) +
+                static_cast<int>(automaticLoopbackTest) +
+                static_cast<int>(automaticNetworkTest) +
+                static_cast<int>(continuousNetwork) > 1) {
+            throw std::invalid_argument("Choose only one test or live mode");
+        }
         application.Initialize(window, automaticRecordingTest,
-                               automaticLoopbackTest, automaticNetworkTest);
+                               automaticLoopbackTest, automaticNetworkTest,
+                               continuousNetwork);
         gApplication = &application;
 
         ShowWindow(window, showCommand);
@@ -649,6 +701,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine,
             }
         }
 
+        application.Shutdown();
         gApplication = nullptr;
         if (!gMoveCaptureError.empty()) {
             throw std::runtime_error(gMoveCaptureError);

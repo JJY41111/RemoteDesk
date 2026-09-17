@@ -66,6 +66,20 @@ H.264 MP4，或在記憶體中完成 H.264 編碼、排隊與解碼 Loopback。
 「封包排入傳送佇列至接收視窗完成 CPU 繪製」的延遲；實測與量測限制見
 [`docs/latency-validation-2026-09-16.md`](docs/latency-validation-2026-09-16.md)。
 
+若要親自觀察拖曳視窗時的延遲，先開接收端，再執行不會在五秒後自動結束的
+持續模式：
+
+```powershell
+.\out\remote_desk_receiver.exe
+.\out\remote_desk.exe --network-live
+```
+
+兩行請在**不同終端**執行。拖曳其他桌面視窗觀察接收端；按傳送端視窗的
+`Esc` 結束串流，接收視窗保留最後畫面，再按它的 `Esc` 關閉。
+接收視窗標題每約 30 幀更新最近最多 60 幀的封包至繪製 P95／最大值。
+網路模式會嘗試將傳送端預覽及接收視窗排除於桌面擷取，避免本機測試時
+「鏡中鏡」反覆編碼；被排除的視窗不會出現在接收畫面中。
+
 也可以在 Developer PowerShell for Visual Studio 中使用 CMake：
 
 ```powershell

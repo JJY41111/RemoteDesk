@@ -172,10 +172,24 @@ LRESULT CALLBACK ViewerWindowProc(HWND window, UINT message, WPARAM wParam,
                     state->recentLatencySamples.pop_front();
                 }
                 if (state->paintedFrames % 30 == 0) {
+                    std::vector<double> recentTotals;
+                    recentTotals.reserve(60);
+                    for (auto it = state->recentLatencySamples.rbegin();
+                         it != state->recentLatencySamples.rend() &&
+                         recentTotals.size() < 60;
+                         ++it) {
+                        recentTotals.push_back(it->totalMilliseconds);
+                    }
+                    std::sort(recentTotals.begin(), recentTotals.end());
+                    const std::size_t p95Index =
+                        (95 * recentTotals.size() + 99) / 100 - 1;
                     const std::wstring title =
-                        L"RemoteDesk Receiver | packet-to-paint " +
+                        L"RemoteDesk Receiver | recent p95 " +
                         std::to_wstring(
-                            static_cast<int>(sample.totalMilliseconds)) +
+                            static_cast<int>(recentTotals[p95Index])) +
+                        L" ms | max " +
+                        std::to_wstring(
+                            static_cast<int>(recentTotals.back())) +
                         L" ms";
                     SetWindowText(window, title.c_str());
                 }
@@ -368,6 +382,10 @@ int main(int argc, char* argv[]) {
         state.qpcTicksPerMillisecond =
             static_cast<double>(frequency.QuadPart) / 1000.0;
         state.window = CreateViewerWindow(GetModuleHandle(nullptr), state);
+        if (!SetWindowDisplayAffinity(state.window, WDA_EXCLUDEFROMCAPTURE)) {
+            std::cerr << "receiver warning: capture window exclusion failed "
+                      << "(Win32 " << GetLastError() << ")\n";
+        }
         ShowWindow(state.window, SW_SHOW);
         UpdateWindow(state.window);
         std::thread receiver([&state] { ReceiveAndDecode(state); });
@@ -392,17 +410,29 @@ int main(int argc, char* argv[]) {
             log << "painted=" << state.paintedFrames << ", timed=" << timed;
             if (timed != 0) {
                 std::vector<double> sorted;
+                std::vector<double> networkSorted;
+                std::vector<double> decodeSorted;
+                std::vector<double> uiSorted;
                 sorted.reserve(timed);
+                networkSorted.reserve(timed);
+                decodeSorted.reserve(timed);
+                uiSorted.reserve(timed);
                 double networkTotal = 0.0;
                 double decodeTotal = 0.0;
                 double uiTotal = 0.0;
                 for (const auto& sample : state.recentLatencySamples) {
                     sorted.push_back(sample.totalMilliseconds);
+                    networkSorted.push_back(sample.networkMilliseconds);
+                    decodeSorted.push_back(sample.decodeMilliseconds);
+                    uiSorted.push_back(sample.uiMilliseconds);
                     networkTotal += sample.networkMilliseconds;
                     decodeTotal += sample.decodeMilliseconds;
                     uiTotal += sample.uiMilliseconds;
                 }
                 std::sort(sorted.begin(), sorted.end());
+                std::sort(networkSorted.begin(), networkSorted.end());
+                std::sort(decodeSorted.begin(), decodeSorted.end());
+                std::sort(uiSorted.begin(), uiSorted.end());
                 const double count = static_cast<double>(timed);
                 const double total = std::accumulate(
                     sorted.begin(), sorted.end(), 0.0);
@@ -410,9 +440,14 @@ int main(int argc, char* argv[]) {
                 log << std::fixed << std::setprecision(2)
                     << ", queue_network_avg_ms="
                     << networkTotal / count
+                    << ", queue_network_p95_ms="
+                    << networkSorted[p95Index]
                     << ", decode_convert_avg_ms="
                     << decodeTotal / count
+                    << ", decode_convert_p95_ms="
+                    << decodeSorted[p95Index]
                     << ", ui_avg_ms=" << uiTotal / count
+                    << ", ui_p95_ms=" << uiSorted[p95Index]
                     << ", packet_to_paint_avg_ms=" << total / count
                     << ", packet_to_paint_p95_ms=" << sorted[p95Index]
                     << ", packet_to_paint_max_ms=" << sorted.back();

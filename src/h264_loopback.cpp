@@ -221,7 +221,8 @@ void H264Loopback::SetPacketCallback(std::function<void(
 
 void H264Loopback::Start(ID3D11Device* device, ID3D11DeviceContext* context,
                          UINT sourceWidth, UINT sourceHeight, UINT outputWidth,
-                         UINT outputHeight, UINT framesPerSecond, UINT bitrate) {
+                         UINT outputHeight, UINT framesPerSecond, UINT bitrate,
+                         bool decodeLocally) {
     if (running_) {
         throw std::runtime_error("H.264 loopback is already active");
     }
@@ -240,14 +241,18 @@ void H264Loopback::Start(ID3D11Device* device, ID3D11DeviceContext* context,
                                CLSCTX_INPROC_SERVER,
                                IID_PPV_ARGS(&encoder_)),
               "Create Microsoft H.264 encoder MFT");
-        Check(CoCreateInstance(CLSID_CMSH264DecoderMFT, nullptr,
-                               CLSCTX_INPROC_SERVER,
-                               IID_PPV_ARGS(&decoder_)),
-              "Create Microsoft H.264 decoder MFT");
+        if (decodeLocally) {
+            Check(CoCreateInstance(CLSID_CMSH264DecoderMFT, nullptr,
+                                   CLSCTX_INPROC_SERVER,
+                                   IID_PPV_ARGS(&decoder_)),
+                  "Create Microsoft H.264 decoder MFT");
+        }
 
         SetOptionalBooleanCodecProperty(encoder_.Get(), CODECAPI_AVLowLatencyMode,
                                         true);
-        SetOptionalDecoderLowLatency(decoder_.Get());
+        if (decodeLocally) {
+            SetOptionalDecoderLowLatency(decoder_.Get());
+        }
 
         auto encodedType = CreateVideoType(MFVideoFormat_H264, outputWidth,
                                            outputHeight, framesPerSecond);
@@ -269,15 +274,20 @@ void H264Loopback::Start(ID3D11Device* device, ID3D11DeviceContext* context,
         Check(encoder_->SetInputType(0, nv12Type.Get(), 0),
               "Set H.264 encoder input type");
 
-        auto decoderInput = CreateVideoType(MFVideoFormat_H264_ES, outputWidth,
-                                            outputHeight, framesPerSecond);
-        Check(decoder_->SetInputType(0, decoderInput.Get(), 0),
-              "Set H.264 decoder input type");
-        Check(decoder_->SetOutputType(0, nv12Type.Get(), 0),
-              "Set H.264 decoder output type");
+        if (decodeLocally) {
+            auto decoderInput = CreateVideoType(MFVideoFormat_H264_ES,
+                                                outputWidth, outputHeight,
+                                                framesPerSecond);
+            Check(decoder_->SetInputType(0, decoderInput.Get(), 0),
+                  "Set H.264 decoder input type");
+            Check(decoder_->SetOutputType(0, nv12Type.Get(), 0),
+                  "Set H.264 decoder output type");
+        }
 
         StartTransform(encoder_.Get());
-        StartTransform(decoder_.Get());
+        if (decodeLocally) {
+            StartTransform(decoder_.Get());
+        }
 
         D3D11_TEXTURE2D_DESC stagingDescription{};
         stagingDescription.Width = sourceWidth;
@@ -308,6 +318,7 @@ void H264Loopback::Start(ID3D11Device* device, ID3D11DeviceContext* context,
         totalEncodeMilliseconds_ = 0.0;
         totalQueueMilliseconds_ = 0.0;
         totalDecodeMilliseconds_ = 0.0;
+        decodeLocally_ = decodeLocally;
         running_ = true;
     } catch (...) {
         encoder_.Reset();
@@ -333,7 +344,9 @@ bool H264Loopback::ProcessFrameIfDue(ID3D11Texture2D* sourceTexture) {
     context_->CopyResource(stagingTexture_.Get(), sourceTexture);
     ConvertLatestFrameToNv12();
     SubmitNv12Frame();
-    DecodeQueuedPackets();
+    if (decodeLocally_) {
+        DecodeQueuedPackets();
+    }
 
     ++statistics_.submittedFrames;
     nextSampleTime_ += sampleDuration_;
@@ -439,7 +452,9 @@ void H264Loopback::DrainEncoder() {
             packetCallback_(packet.bytes, packet.sampleTime,
                             packet.sampleDuration);
         }
-        encodedQueue_.push_back(std::move(packet));
+        if (decodeLocally_) {
+            encodedQueue_.push_back(std::move(packet));
+        }
     }
 }
 
@@ -507,14 +522,18 @@ void H264Loopback::Stop() {
     Check(encoder_->ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0),
           "Drain H.264 encoder");
     DrainEncoder();
-    DecodeQueuedPackets();
-    Check(decoder_->ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0),
-          "Drain H.264 decoder");
-    DrainDecoder();
+    if (decodeLocally_) {
+        DecodeQueuedPackets();
+        Check(decoder_->ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0),
+              "Drain H.264 decoder");
+        DrainDecoder();
+    }
     UpdateAverages();
 
     encoder_->ProcessMessage(MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0);
-    decoder_->ProcessMessage(MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0);
+    if (decodeLocally_) {
+        decoder_->ProcessMessage(MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0);
+    }
     encoder_.Reset();
     decoder_.Reset();
     stagingTexture_.Reset();

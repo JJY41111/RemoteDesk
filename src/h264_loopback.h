@@ -35,7 +35,7 @@ public:
     void Start(ID3D11Device* device, ID3D11DeviceContext* context,
                UINT sourceWidth, UINT sourceHeight, UINT outputWidth = 1280,
                UINT outputHeight = 720, UINT framesPerSecond = 30,
-               UINT bitrate = 4'000'000);
+               UINT bitrate = 4'000'000, bool decodeLocally = true);
     bool ProcessFrameIfDue(ID3D11Texture2D* sourceTexture);
     void Stop();
     void SetPacketCallback(std::function<void(
@@ -47,6 +47,7 @@ public:
     }
     [[nodiscard]] UINT OutputWidth() const noexcept { return outputWidth_; }
     [[nodiscard]] UINT OutputHeight() const noexcept { return outputHeight_; }
+    [[nodiscard]] bool DecodesLocally() const noexcept { return decodeLocally_; }
 
 private:
     using Clock = std::chrono::steady_clock;
@@ -91,6 +92,7 @@ private:
     double totalDecodeMilliseconds_{};
     bool mediaFoundationStarted_{};
     bool running_{};
+    bool decodeLocally_{true};
 };
 
 } // namespace remotedesk

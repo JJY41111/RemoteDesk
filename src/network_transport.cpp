@@ -144,6 +144,15 @@ sockaddr_in LoopbackAddress(unsigned short port) {
     return address;
 }
 
+void DisableNagle(SOCKET socket) {
+    const DWORD noDelay = 1;
+    if (setsockopt(socket, IPPROTO_TCP, TCP_NODELAY,
+                   reinterpret_cast<const char*>(&noDelay),
+                   sizeof(noDelay)) == SOCKET_ERROR) {
+        throw SocketError("disable TCP Nagle algorithm");
+    }
+}
+
 } // namespace
 
 struct TcpPacketSender::Impl {
@@ -263,6 +272,7 @@ void TcpPacketSender::StartLoopback(unsigned short port) {
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
+    DisableNagle(state->socket.Get());
     state->worker = std::thread([pointer = state.get()] { pointer->Run(); });
     impl_ = std::move(state);
 }
@@ -338,6 +348,7 @@ PacketStatistics ReceiveLoopbackPackets(
     if (connection.Get() == INVALID_SOCKET) {
         throw SocketError("accept");
     }
+    DisableNagle(connection.Get());
     listener.Close();
 
     PacketStatistics statistics;
