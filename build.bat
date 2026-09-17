@@ -20,7 +20,7 @@ if errorlevel 1 exit /b %errorlevel%
 
 if not exist out mkdir out
 
-cl.exe /nologo /std:c++20 /EHsc /W4 /permissive- ^
+cl.exe /nologo /std:c++20 /O2 /EHsc /W4 /permissive- ^
     /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /DNOMINMAX ^
     /Fe:out\remote_desk.exe src\main.cpp src\h264_recorder.cpp ^
     src\h264_loopback.cpp src\network_transport.cpp ^
@@ -29,7 +29,7 @@ cl.exe /nologo /std:c++20 /EHsc /W4 /permissive- ^
 
 if errorlevel 1 exit /b %errorlevel%
 
-cl.exe /nologo /std:c++20 /EHsc /W4 /permissive- ^
+cl.exe /nologo /std:c++20 /O2 /EHsc /W4 /permissive- ^
     /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /DNOMINMAX ^
     /Fe:out\remote_desk_receiver.exe src\receiver_main.cpp ^
     src\network_transport.cpp src\h264_network_decoder.cpp ^

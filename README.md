@@ -62,6 +62,9 @@ H.264 MP4，或在記憶體中完成 H.264 編碼、排隊與解碼 Loopback。
 接收視窗保留最後一幀，可按 `Esc` 關閉。若要測完自動關閉，可在接收端
 命令後加上 `--test`。兩個程序只透過 `127.0.0.1:5000` 連線。驗證數據詳見
 [`docs/network-validation-2026-09-16.md`](docs/network-validation-2026-09-16.md)。
+若要比較 720p60，把傳送端命令換成 `--network-60-test`；接收端會自動辨識
+30／60 fps，兩個執行檔須由同一次 `build.bat` 建置。若一開始停在
+`waiting`，請在被擷取的螢幕實際移動一般視窗，讓桌面產生第一張更新畫面。
 接收端已啟用 H.264 解碼器的低延遲模式，並在 `receiver.log` 記錄同機
 「封包排入傳送佇列至接收視窗完成 CPU 繪製」的延遲；實測與量測限制見
 [`docs/latency-validation-2026-09-16.md`](docs/latency-validation-2026-09-16.md)。
@@ -73,6 +76,13 @@ H.264 MP4，或在記憶體中完成 H.264 編碼、排隊與解碼 Loopback。
 .\out\remote_desk_receiver.exe
 .\out\remote_desk.exe --network-live
 ```
+
+720p60 持續模式則使用 `--network-60-live`。請先用 30 fps 和 60 fps 各拖曳
+同一個一般視窗，觀察接收視窗；接收視窗標題及 `receiver.log` 會顯示延遲，
+`receiver.log` 也記錄實際接收／繪製 fps。`build.bat` 目前以 `/O2` 最佳化
+兩個執行檔；沒有這項最佳化時，60 fps 測試曾因 CPU 像素轉換跟不上而
+累積超過一秒延遲。最新對照數據見
+[`docs/game-latency-baseline-2026-09-17.md`](docs/game-latency-baseline-2026-09-17.md)。
 
 兩行請在**不同終端**執行。拖曳其他桌面視窗觀察接收端；按傳送端視窗的
 `Esc` 結束串流，接收視窗保留最後畫面，再按它的 `Esc` 關閉。

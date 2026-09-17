@@ -52,6 +52,7 @@ public:
     [[nodiscard]] UINT OutputWidth() const noexcept { return outputWidth_; }
     [[nodiscard]] UINT OutputHeight() const noexcept { return outputHeight_; }
     [[nodiscard]] bool DecodesLocally() const noexcept { return decodeLocally_; }
+    [[nodiscard]] UINT MillisecondsUntilNextFrame() const noexcept;
 
 private:
     using Clock = std::chrono::steady_clock;

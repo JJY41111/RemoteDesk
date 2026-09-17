@@ -64,6 +64,8 @@ struct ViewerState {
     std::uint64_t timingMatches{};
     std::uint64_t paintedFrames{};
     std::uint64_t lastPaintedSerial{};
+    std::uint64_t firstPaintedQpc{};
+    std::uint64_t lastPaintedQpc{};
     std::uint64_t lastTimedSourceEventQpc{};
     double qpcTicksPerMillisecond{};
     std::deque<LatencySample> recentLatencySamples;
@@ -166,6 +168,10 @@ LRESULT CALLBACK ViewerWindowProc(HWND window, UINT message, WPARAM wParam,
             state->lastPaintedSerial = frame->serial;
             ++state->paintedFrames;
             const std::uint64_t paintedQpc = CurrentQpc();
+            if (state->firstPaintedQpc == 0) {
+                state->firstPaintedQpc = paintedQpc;
+            }
+            state->lastPaintedQpc = paintedQpc;
             if (frame->senderQueuedQpc != 0 &&
                 frame->senderQueuedQpc <= frame->receivedQpc &&
                 frame->receivedQpc <= frame->decodedQpc &&
@@ -302,8 +308,11 @@ void ReceiveAndDecode(ViewerState& state) {
         };
         std::map<std::uint64_t, PacketTiming> timingBySample;
         std::uint64_t nextFrameSerial = 0;
-        decoder.Start(1280, 720, 30,
-                      [&state, &timingBySample, &nextFrameSerial](
+        bool decoderStarted = false;
+        unsigned streamFramesPerSecond = 0;
+        std::uint64_t firstReceivedQpc = 0;
+        std::uint64_t lastReceivedQpc = 0;
+        auto onFrame = [&state, &timingBySample, &nextFrameSerial](
                           std::vector<std::uint8_t>&& bgra, unsigned,
                           unsigned, std::uint64_t sampleTime) {
                           auto frame = std::make_shared<FrameSnapshot>();
@@ -328,12 +337,25 @@ void ReceiveAndDecode(ViewerState& state) {
                               state.latestFrame = std::move(frame);
                           }
                           PostMessage(state.window, kFrameReady, 0, 0);
-                      });
+                      };
 
         const auto packets = remotedesk::ReceiveLoopbackPackets(
             5000,
-            [&decoder, &timingBySample](
+            [&decoder, &timingBySample, &decoderStarted,
+             &streamFramesPerSecond, &firstReceivedQpc, &lastReceivedQpc,
+             &onFrame](
                 const remotedesk::EncodedNetworkPacket& packet) {
+                if (!decoderStarted) {
+                    decoder.Start(1280, 720, packet.framesPerSecond, onFrame);
+                    decoderStarted = true;
+                    streamFramesPerSecond = packet.framesPerSecond;
+                } else if (packet.framesPerSecond != streamFramesPerSecond) {
+                    throw std::runtime_error("Stream frame rate changed");
+                }
+                if (firstReceivedQpc == 0) {
+                    firstReceivedQpc = packet.receivedQpc;
+                }
+                lastReceivedQpc = packet.receivedQpc;
                 timingBySample[packet.sampleTime] = {
                     packet.sourceEventQpc, packet.captureReadyQpc,
                     packet.senderQueuedQpc, packet.receivedQpc};
@@ -344,6 +366,9 @@ void ReceiveAndDecode(ViewerState& state) {
                                      packet.sampleDuration);
             },
             &state.stopRequested);
+        if (!decoderStarted) {
+            throw std::runtime_error("No encoded packets received");
+        }
         const auto decoding = decoder.Stop();
         if (decoding.inputPackets != packets.packets ||
             decoding.decodedFrames != packets.packets ||
@@ -356,6 +381,13 @@ void ReceiveAndDecode(ViewerState& state) {
         }
 
         std::ofstream log("receiver.log", std::ios::trunc);
+        const double receiveSeconds =
+            (lastReceivedQpc - firstReceivedQpc) /
+            (state.qpcTicksPerMillisecond * 1000.0);
+        const double receivedFramesPerSecond =
+            packets.packets > 1 && receiveSeconds > 0.0
+                ? (packets.packets - 1) / receiveSeconds
+                : 0.0;
         log << "received=" << packets.packets << ", bytes=" << packets.bytes
             << ", checksum=" << packets.checksum
             << ", decoded=" << decoding.decodedFrames
@@ -363,14 +395,19 @@ void ReceiveAndDecode(ViewerState& state) {
             << decoding.averageDecodeMilliseconds
             << ", low_latency="
             << (decoding.lowLatencyEnabled ? "yes" : "no")
-            << ", timing_matches=" << state.timingMatches << '\n';
+            << ", timing_matches=" << state.timingMatches
+            << ", fps_declared=" << streamFramesPerSecond
+            << ", recv_fps=" << std::fixed << std::setprecision(2)
+            << receivedFramesPerSecond << '\n';
         std::cout << "received=" << packets.packets << ", bytes="
                   << packets.bytes << ", checksum=" << packets.checksum
                   << ", decoded=" << decoding.decodedFrames
                   << ", low_latency="
                   << (decoding.lowLatencyEnabled ? "yes" : "no")
                   << ", timing_matches=" << state.timingMatches
-                  << ", image=yes\n";
+                  << ", fps_declared=" << streamFramesPerSecond
+                  << ", recv_fps=" << std::fixed << std::setprecision(2)
+                  << receivedFramesPerSecond << ", image=yes\n";
         {
             std::lock_guard lock(state.mutex);
             state.packets = packets;
@@ -458,7 +495,16 @@ int main(int argc, char* argv[]) {
         if (state.successful) {
             std::ofstream log("receiver.log", std::ios::app);
             const std::size_t timed = state.recentLatencySamples.size();
-            log << "painted=" << state.paintedFrames << ", timed=" << timed;
+            const double paintSeconds =
+                (state.lastPaintedQpc - state.firstPaintedQpc) /
+                (state.qpcTicksPerMillisecond * 1000.0);
+            const double paintedFramesPerSecond =
+                state.paintedFrames > 1 && paintSeconds > 0.0
+                    ? (state.paintedFrames - 1) / paintSeconds
+                    : 0.0;
+            log << "painted=" << state.paintedFrames
+                << ", paint_fps=" << std::fixed << std::setprecision(2)
+                << paintedFramesPerSecond << ", timed=" << timed;
             if (timed != 0) {
                 std::vector<double> sorted;
                 std::vector<double> networkSorted;
@@ -548,6 +594,8 @@ int main(int argc, char* argv[]) {
             }
             log << '\n';
             std::cout << "painted=" << state.paintedFrames
+                      << ", paint_fps=" << std::fixed
+                      << std::setprecision(2) << paintedFramesPerSecond
                       << ", timed=" << timed
                       << ", source_timed=" << sourceTimed << '\n';
         }

@@ -20,6 +20,7 @@ struct EncodedNetworkPacket {
     std::uint64_t sampleDuration{};
     unsigned width{};
     unsigned height{};
+    unsigned framesPerSecond{};
     std::uint64_t sourceEventQpc{};
     std::uint64_t captureReadyQpc{};
     std::uint64_t senderQueuedQpc{};
@@ -39,7 +40,8 @@ public:
                      std::uint64_t sampleDuration,
                      unsigned width, unsigned height,
                      std::uint64_t sourceEventQpc = 0,
-                     std::uint64_t captureReadyQpc = 0);
+                     std::uint64_t captureReadyQpc = 0,
+                     unsigned framesPerSecond = 30);
     PacketStatistics Stop();
 
 private:

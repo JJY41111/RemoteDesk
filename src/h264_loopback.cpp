@@ -371,6 +371,19 @@ bool H264Loopback::ProcessFrameIfDue(ID3D11Texture2D* sourceTexture,
     return true;
 }
 
+UINT H264Loopback::MillisecondsUntilNextFrame() const noexcept {
+    if (!running_) {
+        return 16;
+    }
+    const auto now = Clock::now();
+    if (now >= nextFrameDue_) {
+        return 0;
+    }
+    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+        nextFrameDue_ - now).count();
+    return static_cast<UINT>(std::clamp<std::int64_t>(remaining, 1, 16));
+}
+
 void H264Loopback::ConvertLatestFrameToNv12() {
     const auto conversionStart = Clock::now();
     D3D11_MAPPED_SUBRESOURCE mapped{};

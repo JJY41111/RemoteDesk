@@ -114,12 +114,13 @@ class DesktopCaptureApp {
 public:
     void Initialize(HWND window, bool automaticRecordingTest,
                     bool automaticLoopbackTest, bool automaticNetworkTest,
-                    bool continuousNetwork) {
+                    bool continuousNetwork, unsigned networkFramesPerSecond) {
         window_ = window;
         automaticRecordingTest_ = automaticRecordingTest;
         automaticLoopbackTest_ = automaticLoopbackTest;
         automaticNetworkTest_ = automaticNetworkTest;
         continuousNetwork_ = continuousNetwork;
+        networkFramesPerSecond_ = networkFramesPerSecond;
         Log("initialize: start");
 
         if ((automaticNetworkTest_ || continuousNetwork_) &&
@@ -236,8 +237,12 @@ public:
         ComPtr<IDXGIResource> desktopResource;
 
         const auto captureStart = Clock::now();
+        const UINT captureTimeout =
+            automaticNetworkStarted_ && networkFramesPerSecond_ == 60
+                ? loopback_.MillisecondsUntilNextFrame()
+                : 16;
         const HRESULT result = duplication_->AcquireNextFrame(
-            16, &frameInfo, &desktopResource);
+            captureTimeout, &frameInfo, &desktopResource);
 
         if (result == DXGI_ERROR_WAIT_TIMEOUT) {
             ++timeouts_;
@@ -528,15 +533,20 @@ private:
                         bytes, static_cast<std::uint64_t>(sampleTime),
                         static_cast<std::uint64_t>(sampleDuration),
                         loopback_.OutputWidth(), loopback_.OutputHeight(),
-                        sourceEventQpc, captureReadyQpc);
+                        sourceEventQpc, captureReadyQpc,
+                        networkFramesPerSecond_);
                 });
             loopback_.Start(device_.Get(), context_.Get(), width_, height_,
-                            1280, 720, 30, 4'000'000, false);
+                            1280, 720, networkFramesPerSecond_,
+                            networkFramesPerSecond_ == 60 ? 8'000'000
+                                                          : 4'000'000,
+                            false);
             automaticNetworkStarted_ = true;
             automaticNetworkStart_ = Clock::now();
             Log(std::string(continuousNetwork_ ? "network live" :
                                              "network test") +
-                ": connected to 127.0.0.1:5000");
+                ": connected to 127.0.0.1:5000 at 720p" +
+                std::to_string(networkFramesPerSecond_));
             return;
         }
 
@@ -576,7 +586,8 @@ private:
         } else if (loopback_.IsRunning()) {
             const auto& loopbackStats = loopback_.Statistics();
             if (automaticNetworkStarted_) {
-                title << L" | NET 720p enc " << loopbackStats.encodedFrames
+                title << L" | NET 720p" << networkFramesPerSecond_
+                      << L" enc " << loopbackStats.encodedFrames
                       << L" | convert/encode " << std::setprecision(1)
                       << loopbackStats.averageConversionMilliseconds << L"/"
                       << loopbackStats.averageEncodeMilliseconds << L" ms";
@@ -635,6 +646,7 @@ private:
     Clock::time_point automaticLoopbackStart_{};
     bool automaticNetworkTest_{};
     bool continuousNetwork_{};
+    unsigned networkFramesPerSecond_{30};
     bool automaticNetworkStarted_{};
     Clock::time_point automaticNetworkStart_{};
 };
@@ -710,21 +722,29 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine,
         const bool automaticLoopbackTest =
             commandLine != nullptr &&
             wcsstr(commandLine, L"--loopback-test") != nullptr;
-        const bool automaticNetworkTest =
-            commandLine != nullptr &&
+        const bool network30Test = commandLine != nullptr &&
             wcsstr(commandLine, L"--network-test") != nullptr;
-        const bool continuousNetwork =
-            commandLine != nullptr &&
+        const bool network60Test = commandLine != nullptr &&
+            wcsstr(commandLine, L"--network-60-test") != nullptr;
+        const bool network30Live = commandLine != nullptr &&
             wcsstr(commandLine, L"--network-live") != nullptr;
+        const bool network60Live = commandLine != nullptr &&
+            wcsstr(commandLine, L"--network-60-live") != nullptr;
         if (static_cast<int>(automaticRecordingTest) +
                 static_cast<int>(automaticLoopbackTest) +
-                static_cast<int>(automaticNetworkTest) +
-                static_cast<int>(continuousNetwork) > 1) {
+                static_cast<int>(network30Test) +
+                static_cast<int>(network60Test) +
+                static_cast<int>(network30Live) +
+                static_cast<int>(network60Live) > 1) {
             throw std::invalid_argument("Choose only one test or live mode");
         }
+        const bool automaticNetworkTest = network30Test || network60Test;
+        const bool continuousNetwork = network30Live || network60Live;
+        const unsigned networkFramesPerSecond =
+            network60Test || network60Live ? 60u : 30u;
         application.Initialize(window, automaticRecordingTest,
                                automaticLoopbackTest, automaticNetworkTest,
-                               continuousNetwork);
+                               continuousNetwork, networkFramesPerSecond);
         gApplication = &application;
 
         ShowWindow(window, showCommand);

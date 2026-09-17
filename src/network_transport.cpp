@@ -20,8 +20,8 @@ namespace remotedesk {
 namespace {
 
 constexpr std::uint32_t kMagic = 0x5244534B; // RDSK
-constexpr std::uint32_t kVersion = 3;
-constexpr std::size_t kHeaderFields = 16;
+constexpr std::uint32_t kVersion = 4;
+constexpr std::size_t kHeaderFields = 17;
 constexpr std::size_t kMaxPacketBytes = 2 * 1024 * 1024;
 constexpr std::size_t kMaxQueuedPackets = 16;
 
@@ -163,6 +163,7 @@ struct TcpPacketSender::Impl {
         std::uint32_t sequence{};
         unsigned width{};
         unsigned height{};
+        unsigned framesPerSecond{};
         std::uint64_t sourceEventQpc{};
         std::uint64_t captureReadyQpc{};
         std::uint64_t queuedQpc{};
@@ -216,6 +217,7 @@ struct TcpPacketSender::Impl {
                     htonl(low(packet.sourceEventQpc)),
                     htonl(high(packet.captureReadyQpc)),
                     htonl(low(packet.captureReadyQpc)),
+                    htonl(packet.framesPerSecond),
                 };
                 SendAll(socket.Get(), reinterpret_cast<const char*>(header.data()),
                         sizeof(header));
@@ -288,8 +290,10 @@ void TcpPacketSender::QueuePacket(const std::vector<std::uint8_t>& bytes,
                                   std::uint64_t sampleDuration,
                                   unsigned width, unsigned height,
                                   std::uint64_t sourceEventQpc,
-                                  std::uint64_t captureReadyQpc) {
-    if (!impl_ || bytes.empty() || bytes.size() > kMaxPacketBytes) {
+                                  std::uint64_t captureReadyQpc,
+                                  unsigned framesPerSecond) {
+    if (!impl_ || bytes.empty() || bytes.size() > kMaxPacketBytes ||
+        (framesPerSecond != 30 && framesPerSecond != 60)) {
         throw std::runtime_error("Invalid TCP H.264 packet");
     }
     {
@@ -306,6 +310,7 @@ void TcpPacketSender::QueuePacket(const std::vector<std::uint8_t>& bytes,
         }
         impl_->queue.push_back({bytes, sampleTime, sampleDuration,
                                 impl_->nextSequence++, width, height,
+                                framesPerSecond,
                                 sourceEventQpc, captureReadyQpc,
                                 static_cast<std::uint64_t>(
                                     queuedQpc.QuadPart)});
@@ -374,13 +379,15 @@ PacketStatistics ReceiveLoopbackPackets(
         const std::uint32_t length = header[5];
         if (header[0] != kMagic || header[1] != kVersion ||
             header[2] != expectedSequence++ || header[3] != 1280 ||
-            header[4] != 720 || length == 0 || length > kMaxPacketBytes) {
+            header[4] != 720 || length == 0 || length > kMaxPacketBytes ||
+            (header[16] != 30 && header[16] != 60)) {
             throw std::runtime_error("Invalid TCP H.264 packet header");
         }
         EncodedNetworkPacket packet;
         packet.bytes.resize(length);
         packet.width = header[3];
         packet.height = header[4];
+        packet.framesPerSecond = header[16];
         packet.sampleTime = (static_cast<std::uint64_t>(header[6]) << 32) |
                             header[7];
         packet.sampleDuration = (static_cast<std::uint64_t>(header[8]) << 32) |
