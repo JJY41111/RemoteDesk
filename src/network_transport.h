@@ -20,6 +20,8 @@ struct EncodedNetworkPacket {
     std::uint64_t sampleDuration{};
     unsigned width{};
     unsigned height{};
+    std::uint64_t sourceEventQpc{};
+    std::uint64_t captureReadyQpc{};
     std::uint64_t senderQueuedQpc{};
     std::uint64_t receivedQpc{};
 };
@@ -35,7 +37,9 @@ public:
     void QueuePacket(const std::vector<std::uint8_t>& bytes,
                      std::uint64_t sampleTime,
                      std::uint64_t sampleDuration,
-                     unsigned width, unsigned height);
+                     unsigned width, unsigned height,
+                     std::uint64_t sourceEventQpc = 0,
+                     std::uint64_t captureReadyQpc = 0);
     PacketStatistics Stop();
 
 private:

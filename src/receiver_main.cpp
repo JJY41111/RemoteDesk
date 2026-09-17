@@ -31,6 +31,8 @@ constexpr std::size_t kMaxLatencySamples = 1800;
 struct FrameSnapshot {
     std::vector<std::uint8_t> bgra;
     std::uint64_t serial{};
+    std::uint64_t sourceEventQpc{};
+    std::uint64_t captureReadyQpc{};
     std::uint64_t senderQueuedQpc{};
     std::uint64_t receivedQpc{};
     std::uint64_t decodedQpc{};
@@ -41,6 +43,12 @@ struct LatencySample {
     double decodeMilliseconds{};
     double uiMilliseconds{};
     double totalMilliseconds{};
+};
+
+struct SourceLatencySample {
+    double eventToCaptureMilliseconds{};
+    double captureToQueueMilliseconds{};
+    double eventToPaintMilliseconds{};
 };
 
 struct ViewerState {
@@ -56,8 +64,10 @@ struct ViewerState {
     std::uint64_t timingMatches{};
     std::uint64_t paintedFrames{};
     std::uint64_t lastPaintedSerial{};
+    std::uint64_t lastTimedSourceEventQpc{};
     double qpcTicksPerMillisecond{};
     std::deque<LatencySample> recentLatencySamples;
+    std::deque<SourceLatencySample> recentSourceLatencySamples;
 };
 
 std::uint64_t CurrentQpc() noexcept {
@@ -171,6 +181,22 @@ LRESULT CALLBACK ViewerWindowProc(HWND window, UINT message, WPARAM wParam,
                     kMaxLatencySamples) {
                     state->recentLatencySamples.pop_front();
                 }
+                if (frame->sourceEventQpc >
+                        state->lastTimedSourceEventQpc &&
+                    frame->sourceEventQpc <= frame->captureReadyQpc &&
+                    frame->captureReadyQpc <= frame->senderQueuedQpc) {
+                    state->lastTimedSourceEventQpc = frame->sourceEventQpc;
+                    state->recentSourceLatencySamples.push_back({
+                        (frame->captureReadyQpc - frame->sourceEventQpc) /
+                            ticks,
+                        (frame->senderQueuedQpc - frame->captureReadyQpc) /
+                            ticks,
+                        (paintedQpc - frame->sourceEventQpc) / ticks});
+                    if (state->recentSourceLatencySamples.size() >
+                        kMaxLatencySamples) {
+                        state->recentSourceLatencySamples.pop_front();
+                    }
+                }
                 if (state->paintedFrames % 30 == 0) {
                     std::vector<double> recentTotals;
                     recentTotals.reserve(60);
@@ -183,14 +209,32 @@ LRESULT CALLBACK ViewerWindowProc(HWND window, UINT message, WPARAM wParam,
                     std::sort(recentTotals.begin(), recentTotals.end());
                     const std::size_t p95Index =
                         (95 * recentTotals.size() + 99) / 100 - 1;
-                    const std::wstring title =
-                        L"RemoteDesk Receiver | recent p95 " +
+                    std::wstring title =
+                        L"RemoteDesk Receiver | packet p95 " +
                         std::to_wstring(
                             static_cast<int>(recentTotals[p95Index])) +
-                        L" ms | max " +
-                        std::to_wstring(
-                            static_cast<int>(recentTotals.back())) +
                         L" ms";
+                    if (!state->recentSourceLatencySamples.empty()) {
+                        std::vector<double> recentSourceTotals;
+                        recentSourceTotals.reserve(60);
+                        for (auto it =
+                                 state->recentSourceLatencySamples.rbegin();
+                             it !=
+                                 state->recentSourceLatencySamples.rend() &&
+                             recentSourceTotals.size() < 60;
+                             ++it) {
+                            recentSourceTotals.push_back(
+                                it->eventToPaintMilliseconds);
+                        }
+                        std::sort(recentSourceTotals.begin(),
+                                  recentSourceTotals.end());
+                        const std::size_t sourceP95Index =
+                            (95 * recentSourceTotals.size() + 99) / 100 - 1;
+                        title += L" | desktop p95 " +
+                                 std::to_wstring(static_cast<int>(
+                                     recentSourceTotals[sourceP95Index])) +
+                                 L" ms";
+                    }
                     SetWindowText(window, title.c_str());
                 }
             }
@@ -251,6 +295,8 @@ void ReceiveAndDecode(ViewerState& state) {
     try {
         remotedesk::H264NetworkDecoder decoder;
         struct PacketTiming {
+            std::uint64_t sourceEventQpc{};
+            std::uint64_t captureReadyQpc{};
             std::uint64_t senderQueuedQpc{};
             std::uint64_t receivedQpc{};
         };
@@ -265,6 +311,10 @@ void ReceiveAndDecode(ViewerState& state) {
                           frame->serial = ++nextFrameSerial;
                           const auto timing = timingBySample.find(sampleTime);
                           if (timing != timingBySample.end()) {
+                              frame->sourceEventQpc =
+                                  timing->second.sourceEventQpc;
+                              frame->captureReadyQpc =
+                                  timing->second.captureReadyQpc;
                               frame->senderQueuedQpc =
                                   timing->second.senderQueuedQpc;
                               frame->receivedQpc =
@@ -285,6 +335,7 @@ void ReceiveAndDecode(ViewerState& state) {
             [&decoder, &timingBySample](
                 const remotedesk::EncodedNetworkPacket& packet) {
                 timingBySample[packet.sampleTime] = {
+                    packet.sourceEventQpc, packet.captureReadyQpc,
                     packet.senderQueuedQpc, packet.receivedQpc};
                 while (timingBySample.size() > 128) {
                     timingBySample.erase(timingBySample.begin());
@@ -453,8 +504,52 @@ int main(int argc, char* argv[]) {
                     << ", packet_to_paint_max_ms=" << sorted.back();
             }
             log << '\n';
+            const std::size_t sourceTimed =
+                state.recentSourceLatencySamples.size();
+            log << "source_timed=" << sourceTimed;
+            if (sourceTimed != 0) {
+                std::vector<double> eventToCapture;
+                std::vector<double> captureToQueue;
+                std::vector<double> eventToPaint;
+                eventToCapture.reserve(sourceTimed);
+                captureToQueue.reserve(sourceTimed);
+                eventToPaint.reserve(sourceTimed);
+                for (const auto& sample : state.recentSourceLatencySamples) {
+                    eventToCapture.push_back(
+                        sample.eventToCaptureMilliseconds);
+                    captureToQueue.push_back(
+                        sample.captureToQueueMilliseconds);
+                    eventToPaint.push_back(sample.eventToPaintMilliseconds);
+                }
+                std::sort(eventToCapture.begin(), eventToCapture.end());
+                std::sort(captureToQueue.begin(), captureToQueue.end());
+                std::sort(eventToPaint.begin(), eventToPaint.end());
+                const double count = static_cast<double>(sourceTimed);
+                const std::size_t p95Index =
+                    (95 * sourceTimed + 99) / 100 - 1;
+                log << std::fixed << std::setprecision(2)
+                    << ", event_to_capture_avg_ms="
+                    << std::accumulate(eventToCapture.begin(),
+                                       eventToCapture.end(), 0.0) / count
+                    << ", event_to_capture_p95_ms="
+                    << eventToCapture[p95Index]
+                    << ", capture_to_queue_avg_ms="
+                    << std::accumulate(captureToQueue.begin(),
+                                       captureToQueue.end(), 0.0) / count
+                    << ", capture_to_queue_p95_ms="
+                    << captureToQueue[p95Index]
+                    << ", event_to_paint_avg_ms="
+                    << std::accumulate(eventToPaint.begin(),
+                                       eventToPaint.end(), 0.0) / count
+                    << ", event_to_paint_p95_ms="
+                    << eventToPaint[p95Index]
+                    << ", event_to_paint_max_ms="
+                    << eventToPaint.back();
+            }
+            log << '\n';
             std::cout << "painted=" << state.paintedFrames
-                      << ", timed=" << timed << '\n';
+                      << ", timed=" << timed
+                      << ", source_timed=" << sourceTimed << '\n';
         }
         if (!state.error.empty()) {
             return 1;

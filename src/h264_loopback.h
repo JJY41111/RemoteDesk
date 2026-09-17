@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <map>
 #include <vector>
 
 struct IMFTransform;
@@ -36,10 +37,13 @@ public:
                UINT sourceWidth, UINT sourceHeight, UINT outputWidth = 1280,
                UINT outputHeight = 720, UINT framesPerSecond = 30,
                UINT bitrate = 4'000'000, bool decodeLocally = true);
-    bool ProcessFrameIfDue(ID3D11Texture2D* sourceTexture);
-    void Stop();
+    bool ProcessFrameIfDue(ID3D11Texture2D* sourceTexture,
+                           std::uint64_t sourceEventQpc = 0,
+                           std::uint64_t captureReadyQpc = 0);
+    void Stop(bool emitFinalPackets = true);
     void SetPacketCallback(std::function<void(
-        const std::vector<std::uint8_t>&, LONGLONG, LONGLONG)> callback);
+        const std::vector<std::uint8_t>&, LONGLONG, LONGLONG,
+        std::uint64_t, std::uint64_t)> callback);
 
     [[nodiscard]] bool IsRunning() const noexcept { return running_; }
     [[nodiscard]] const LoopbackStatistics& Statistics() const noexcept {
@@ -59,6 +63,11 @@ private:
         Clock::time_point queuedAt{};
     };
 
+    struct SourceTimestamps {
+        std::uint64_t sourceEventQpc{};
+        std::uint64_t captureReadyQpc{};
+    };
+
     void ConvertLatestFrameToNv12();
     void SubmitNv12Frame();
     void DrainEncoder();
@@ -72,7 +81,9 @@ private:
     Microsoft::WRL::ComPtr<IMFTransform> decoder_;
 
     std::deque<EncodedPacket> encodedQueue_;
-    std::function<void(const std::vector<std::uint8_t>&, LONGLONG, LONGLONG)>
+    std::map<LONGLONG, SourceTimestamps> sourceTimestampsBySample_;
+    std::function<void(const std::vector<std::uint8_t>&, LONGLONG, LONGLONG,
+                       std::uint64_t, std::uint64_t)>
         packetCallback_;
     std::vector<std::uint8_t> nv12Frame_;
 

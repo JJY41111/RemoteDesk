@@ -8,7 +8,9 @@
 #include "h264_loopback.h"
 #include "network_transport.h"
 
+#include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
@@ -210,7 +212,16 @@ public:
 
     void Shutdown() {
         if (automaticNetworkStarted_ && loopback_.IsRunning()) {
-            StopNetwork(continuousNetwork_ ? "network live" : "network test");
+            if (continuousNetwork_) {
+                try {
+                    StopNetwork("network live", false);
+                } catch (const std::exception& error) {
+                    Log(std::string("network live: stopped after disconnect: ") +
+                        error.what());
+                }
+            } else {
+                StopNetwork("network test");
+            }
         }
     }
 
@@ -264,6 +275,20 @@ public:
         DrawPointerIfNeeded();
         context_->CopyResource(backBuffer_.Get(), latestFrameTexture_.Get());
         ThrowIfFailed(swapChain_->Present(0, 0), "Present");
+
+        const LONGLONG sourceEventQpc = std::max(
+            frameInfo.LastPresentTime.QuadPart,
+            frameInfo.LastMouseUpdateTime.QuadPart);
+        if (sourceEventQpc > 0) {
+            latestSourceEventQpc_ =
+                static_cast<std::uint64_t>(sourceEventQpc);
+        }
+        LARGE_INTEGER captureReadyQpc{};
+        if (!QueryPerformanceCounter(&captureReadyQpc)) {
+            throw std::runtime_error("Query capture performance counter failed");
+        }
+        latestCaptureReadyQpc_ =
+            static_cast<std::uint64_t>(captureReadyQpc.QuadPart);
 
         const auto captureEnd = Clock::now();
         captureTimeMilliseconds_ +=
@@ -387,7 +412,24 @@ private:
 
     void ProcessLoopbackFrameIfDue() {
         if (firstFrameCaptured_ && loopback_.IsRunning()) {
-            loopback_.ProcessFrameIfDue(latestFrameTexture_.Get());
+            try {
+                loopback_.ProcessFrameIfDue(latestFrameTexture_.Get(),
+                                            latestSourceEventQpc_,
+                                            latestCaptureReadyQpc_);
+            } catch (const std::exception& error) {
+                if (!continuousNetwork_ || !automaticNetworkStarted_) {
+                    throw;
+                }
+                Log(std::string("network live: receiver disconnected: ") +
+                    error.what());
+                try {
+                    StopNetwork("network live", false);
+                } catch (const std::exception& stopError) {
+                    Log(std::string("network live: stopped after disconnect: ") +
+                        stopError.what());
+                }
+                PostMessage(window_, WM_CLOSE, 0, 0);
+            }
         }
     }
 
@@ -409,8 +451,8 @@ private:
         Log(message.str());
     }
 
-    void StopNetwork(const char* prefix) {
-        loopback_.Stop();
+    void StopNetwork(const char* prefix, bool emitFinalPackets = true) {
+        loopback_.Stop(emitFinalPackets);
         const auto network = networkSender_.Stop();
         LogLoopbackResult(std::string(prefix) + ": codec completed");
         Log(std::string(prefix) + ": sent=" +
@@ -479,11 +521,14 @@ private:
             networkSender_.StartLoopback(5000);
             loopback_.SetPacketCallback(
                 [this](const std::vector<std::uint8_t>& bytes,
-                       LONGLONG sampleTime, LONGLONG sampleDuration) {
+                       LONGLONG sampleTime, LONGLONG sampleDuration,
+                       std::uint64_t sourceEventQpc,
+                       std::uint64_t captureReadyQpc) {
                     networkSender_.QueuePacket(
                         bytes, static_cast<std::uint64_t>(sampleTime),
                         static_cast<std::uint64_t>(sampleDuration),
-                        loopback_.OutputWidth(), loopback_.OutputHeight());
+                        loopback_.OutputWidth(), loopback_.OutputHeight(),
+                        sourceEventQpc, captureReadyQpc);
                 });
             loopback_.Start(device_.Get(), context_.Get(), width_, height_,
                             1280, 720, 30, 4'000'000, false);
@@ -580,6 +625,8 @@ private:
     unsigned long long timeouts_{};
     double captureTimeMilliseconds_{};
     bool firstFrameCaptured_{};
+    std::uint64_t latestSourceEventQpc_{};
+    std::uint64_t latestCaptureReadyQpc_{};
     bool automaticRecordingTest_{};
     bool automaticRecordingStarted_{};
     Clock::time_point automaticRecordingStart_{};

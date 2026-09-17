@@ -20,8 +20,8 @@ namespace remotedesk {
 namespace {
 
 constexpr std::uint32_t kMagic = 0x5244534B; // RDSK
-constexpr std::uint32_t kVersion = 2;
-constexpr std::size_t kHeaderFields = 12;
+constexpr std::uint32_t kVersion = 3;
+constexpr std::size_t kHeaderFields = 16;
 constexpr std::size_t kMaxPacketBytes = 2 * 1024 * 1024;
 constexpr std::size_t kMaxQueuedPackets = 16;
 
@@ -163,6 +163,8 @@ struct TcpPacketSender::Impl {
         std::uint32_t sequence{};
         unsigned width{};
         unsigned height{};
+        std::uint64_t sourceEventQpc{};
+        std::uint64_t captureReadyQpc{};
         std::uint64_t queuedQpc{};
     };
 
@@ -210,6 +212,10 @@ struct TcpPacketSender::Impl {
                     htonl(low(packet.sampleDuration)),
                     htonl(high(packet.queuedQpc)),
                     htonl(low(packet.queuedQpc)),
+                    htonl(high(packet.sourceEventQpc)),
+                    htonl(low(packet.sourceEventQpc)),
+                    htonl(high(packet.captureReadyQpc)),
+                    htonl(low(packet.captureReadyQpc)),
                 };
                 SendAll(socket.Get(), reinterpret_cast<const char*>(header.data()),
                         sizeof(header));
@@ -280,7 +286,9 @@ void TcpPacketSender::StartLoopback(unsigned short port) {
 void TcpPacketSender::QueuePacket(const std::vector<std::uint8_t>& bytes,
                                   std::uint64_t sampleTime,
                                   std::uint64_t sampleDuration,
-                                  unsigned width, unsigned height) {
+                                  unsigned width, unsigned height,
+                                  std::uint64_t sourceEventQpc,
+                                  std::uint64_t captureReadyQpc) {
     if (!impl_ || bytes.empty() || bytes.size() > kMaxPacketBytes) {
         throw std::runtime_error("Invalid TCP H.264 packet");
     }
@@ -298,6 +306,7 @@ void TcpPacketSender::QueuePacket(const std::vector<std::uint8_t>& bytes,
         }
         impl_->queue.push_back({bytes, sampleTime, sampleDuration,
                                 impl_->nextSequence++, width, height,
+                                sourceEventQpc, captureReadyQpc,
                                 static_cast<std::uint64_t>(
                                     queuedQpc.QuadPart)});
     }
@@ -378,6 +387,10 @@ PacketStatistics ReceiveLoopbackPackets(
                                 header[9];
         packet.senderQueuedQpc =
             (static_cast<std::uint64_t>(header[10]) << 32) | header[11];
+        packet.sourceEventQpc =
+            (static_cast<std::uint64_t>(header[12]) << 32) | header[13];
+        packet.captureReadyQpc =
+            (static_cast<std::uint64_t>(header[14]) << 32) | header[15];
         if (!ReceiveAll(connection.Get(),
                         reinterpret_cast<char*>(packet.bytes.data()),
                         packet.bytes.size(), stopRequested)) {

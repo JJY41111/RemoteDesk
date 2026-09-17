@@ -212,7 +212,8 @@ H264Loopback::~H264Loopback() {
 }
 
 void H264Loopback::SetPacketCallback(std::function<void(
-    const std::vector<std::uint8_t>&, LONGLONG, LONGLONG)> callback) {
+    const std::vector<std::uint8_t>&, LONGLONG, LONGLONG,
+    std::uint64_t, std::uint64_t)> callback) {
     if (running_) {
         throw std::runtime_error("Cannot change H.264 packet callback while running");
     }
@@ -313,6 +314,7 @@ void H264Loopback::Start(ID3D11Device* device, ID3D11DeviceContext* context,
         nextFrameDue_ = Clock::now();
         nv12Frame_.resize(outputWidth_ * outputHeight_ * 3 / 2);
         encodedQueue_.clear();
+        sourceTimestampsBySample_.clear();
         statistics_ = {};
         totalConversionMilliseconds_ = 0.0;
         totalEncodeMilliseconds_ = 0.0;
@@ -331,7 +333,9 @@ void H264Loopback::Start(ID3D11Device* device, ID3D11DeviceContext* context,
     }
 }
 
-bool H264Loopback::ProcessFrameIfDue(ID3D11Texture2D* sourceTexture) {
+bool H264Loopback::ProcessFrameIfDue(ID3D11Texture2D* sourceTexture,
+                                     std::uint64_t sourceEventQpc,
+                                     std::uint64_t captureReadyQpc) {
     if (!running_ || sourceTexture == nullptr) {
         return false;
     }
@@ -343,6 +347,13 @@ bool H264Loopback::ProcessFrameIfDue(ID3D11Texture2D* sourceTexture) {
 
     context_->CopyResource(stagingTexture_.Get(), sourceTexture);
     ConvertLatestFrameToNv12();
+    if (packetCallback_) {
+        sourceTimestampsBySample_[nextSampleTime_] = {
+            sourceEventQpc, captureReadyQpc};
+        while (sourceTimestampsBySample_.size() > 128) {
+            sourceTimestampsBySample_.erase(sourceTimestampsBySample_.begin());
+        }
+    }
     SubmitNv12Frame();
     if (decodeLocally_) {
         DecodeQueuedPackets();
@@ -449,8 +460,17 @@ void H264Loopback::DrainEncoder() {
         statistics_.encodedBytes += packet.bytes.size();
         ++statistics_.encodedFrames;
         if (packetCallback_ && !packet.bytes.empty()) {
+            SourceTimestamps timestamps{};
+            const auto timing =
+                sourceTimestampsBySample_.find(packet.sampleTime);
+            if (timing != sourceTimestampsBySample_.end()) {
+                timestamps = timing->second;
+                sourceTimestampsBySample_.erase(timing);
+            }
             packetCallback_(packet.bytes, packet.sampleTime,
-                            packet.sampleDuration);
+                            packet.sampleDuration,
+                            timestamps.sourceEventQpc,
+                            timestamps.captureReadyQpc);
         }
         if (decodeLocally_) {
             encodedQueue_.push_back(std::move(packet));
@@ -514,9 +534,13 @@ void H264Loopback::UpdateAverages() {
     statistics_.averageDecodeMilliseconds = totalDecodeMilliseconds_ / encoded;
 }
 
-void H264Loopback::Stop() {
+void H264Loopback::Stop(bool emitFinalPackets) {
     if (!running_) {
         return;
+    }
+
+    if (!emitFinalPackets) {
+        packetCallback_ = {};
     }
 
     Check(encoder_->ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0),
@@ -540,6 +564,7 @@ void H264Loopback::Stop() {
     context_.Reset();
     nv12Frame_.clear();
     encodedQueue_.clear();
+    sourceTimestampsBySample_.clear();
     running_ = false;
 
     Check(MFShutdown(), "MFShutdown for H.264 loopback");
