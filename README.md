@@ -68,6 +68,9 @@ H.264 MP4，或在記憶體中完成 H.264 編碼、排隊與解碼 Loopback。
 接收端已啟用 H.264 解碼器的低延遲模式，並在 `receiver.log` 記錄同機
 「封包排入傳送佇列至接收視窗完成 CPU 繪製」的延遲；實測與量測限制見
 [`docs/latency-validation-2026-09-16.md`](docs/latency-validation-2026-09-16.md)。
+接收端現在也把每個封包宣告為一張完整 H.264 畫面，避免解碼器為等待
+下一個可能的片段而多緩衝一幀；2026-09-17 的實測結果見
+[`docs/game-latency-baseline-2026-09-17.md`](docs/game-latency-baseline-2026-09-17.md)。
 
 若要親自觀察拖曳視窗時的延遲，先開接收端，再執行不會在五秒後自動結束的
 持續模式：

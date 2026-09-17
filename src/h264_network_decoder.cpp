@@ -229,8 +229,11 @@ void H264NetworkDecoder::Start(unsigned width, unsigned height,
                 codecApi->SetValue(&CODECAPI_AVLowLatencyMode, &setting));
             VariantClear(&setting);
         }
+        // Each TCP packet carries one complete encoder output picture.
+        // H264_ES allows fragmented pictures and made this decoder wait
+        // for the next packet before releasing the previous frame.
         auto inputType =
-            VideoType(MFVideoFormat_H264_ES, width, height, framesPerSecond);
+            VideoType(MFVideoFormat_H264, width, height, framesPerSecond);
         state->outputType =
             VideoType(MFVideoFormat_NV12, width, height, framesPerSecond);
         Check(state->outputType->SetUINT32(MF_MT_DEFAULT_STRIDE, width),
