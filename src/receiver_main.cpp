@@ -15,6 +15,7 @@
 #include <memory>
 #include <mutex>
 #include <numeric>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -64,10 +65,13 @@ struct ViewerState {
     std::uint64_t timingMatches{};
     std::uint64_t paintedFrames{};
     std::uint64_t lastPaintedSerial{};
+    std::uint64_t skippedPaintFrames{};
     std::uint64_t firstPaintedQpc{};
     std::uint64_t lastPaintedQpc{};
+    double maxPaintGapMilliseconds{};
     std::uint64_t lastTimedSourceEventQpc{};
     double qpcTicksPerMillisecond{};
+    std::deque<std::uint64_t> recentPaintQpc;
     std::deque<LatencySample> recentLatencySamples;
     std::deque<SourceLatencySample> recentSourceLatencySamples;
 };
@@ -165,13 +169,31 @@ LRESULT CALLBACK ViewerWindowProc(HWND window, UINT message, WPARAM wParam,
         EndPaint(window, &paint);
         if (state != nullptr && frame &&
             frame->serial != state->lastPaintedSerial) {
+            if (frame->serial > state->lastPaintedSerial + 1) {
+                state->skippedPaintFrames +=
+                    frame->serial - state->lastPaintedSerial - 1;
+            }
             state->lastPaintedSerial = frame->serial;
             ++state->paintedFrames;
             const std::uint64_t paintedQpc = CurrentQpc();
             if (state->firstPaintedQpc == 0) {
                 state->firstPaintedQpc = paintedQpc;
             }
+            if (state->lastPaintedQpc != 0) {
+                state->maxPaintGapMilliseconds = std::max(
+                    state->maxPaintGapMilliseconds,
+                    (paintedQpc - state->lastPaintedQpc) /
+                        state->qpcTicksPerMillisecond);
+            }
             state->lastPaintedQpc = paintedQpc;
+            state->recentPaintQpc.push_back(paintedQpc);
+            const auto oneSecondTicks = static_cast<std::uint64_t>(
+                state->qpcTicksPerMillisecond * 1000.0);
+            while (state->recentPaintQpc.size() > 2 &&
+                   paintedQpc - state->recentPaintQpc.front() >
+                       oneSecondTicks) {
+                state->recentPaintQpc.pop_front();
+            }
             if (frame->senderQueuedQpc != 0 &&
                 frame->senderQueuedQpc <= frame->receivedQpc &&
                 frame->receivedQpc <= frame->decodedQpc &&
@@ -215,11 +237,24 @@ LRESULT CALLBACK ViewerWindowProc(HWND window, UINT message, WPARAM wParam,
                     std::sort(recentTotals.begin(), recentTotals.end());
                     const std::size_t p95Index =
                         (95 * recentTotals.size() + 99) / 100 - 1;
-                    std::wstring title =
-                        L"RemoteDesk Receiver | packet p95 " +
-                        std::to_wstring(
-                            static_cast<int>(recentTotals[p95Index])) +
-                        L" ms";
+                    const auto& paintTimes = state->recentPaintQpc;
+                    const double paintSeconds =
+                        (paintTimes.back() - paintTimes.front()) /
+                        (state->qpcTicksPerMillisecond * 1000.0);
+                    const double recentPaintFps =
+                        paintTimes.size() > 1 && paintSeconds > 0.0
+                            ? (paintTimes.size() - 1) / paintSeconds
+                            : 0.0;
+                    std::wostringstream title;
+                    title << L"RemoteDesk Receiver | paint " << std::fixed
+                          << std::setprecision(1) << recentPaintFps
+                          << L" FPS | skipped " << state->skippedPaintFrames
+                          << L" | worst gap "
+                          << static_cast<int>(state->maxPaintGapMilliseconds)
+                          << L" ms"
+                          << L" | packet p95 "
+                          << static_cast<int>(recentTotals[p95Index])
+                          << L" ms";
                     if (!state->recentSourceLatencySamples.empty()) {
                         std::vector<double> recentSourceTotals;
                         recentSourceTotals.reserve(60);
@@ -236,12 +271,12 @@ LRESULT CALLBACK ViewerWindowProc(HWND window, UINT message, WPARAM wParam,
                                   recentSourceTotals.end());
                         const std::size_t sourceP95Index =
                             (95 * recentSourceTotals.size() + 99) / 100 - 1;
-                        title += L" | desktop p95 " +
-                                 std::to_wstring(static_cast<int>(
-                                     recentSourceTotals[sourceP95Index])) +
-                                 L" ms";
+                        title << L" | desktop p95 "
+                              << static_cast<int>(
+                                     recentSourceTotals[sourceP95Index])
+                              << L" ms";
                     }
-                    SetWindowText(window, title.c_str());
+                    SetWindowText(window, title.str().c_str());
                 }
             }
         }
@@ -504,7 +539,11 @@ int main(int argc, char* argv[]) {
                     : 0.0;
             log << "painted=" << state.paintedFrames
                 << ", paint_fps=" << std::fixed << std::setprecision(2)
-                << paintedFramesPerSecond << ", timed=" << timed;
+                << paintedFramesPerSecond
+                << ", skipped_paints=" << state.skippedPaintFrames
+                << ", paint_max_gap_ms=" << std::fixed
+                << std::setprecision(2) << state.maxPaintGapMilliseconds
+                << ", timed=" << timed;
             if (timed != 0) {
                 std::vector<double> sorted;
                 std::vector<double> networkSorted;
@@ -596,6 +635,9 @@ int main(int argc, char* argv[]) {
             std::cout << "painted=" << state.paintedFrames
                       << ", paint_fps=" << std::fixed
                       << std::setprecision(2) << paintedFramesPerSecond
+                      << ", skipped_paints=" << state.skippedPaintFrames
+                      << ", paint_max_gap_ms="
+                      << state.maxPaintGapMilliseconds
                       << ", timed=" << timed
                       << ", source_timed=" << sourceTimed << '\n';
         }
