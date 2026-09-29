@@ -22,8 +22,16 @@ namespace {
 constexpr std::uint32_t kMagic = 0x5244534B; // RDSK
 constexpr std::uint32_t kVersion = 4;
 constexpr std::size_t kHeaderFields = 17;
-constexpr std::size_t kMaxPacketBytes = 2 * 1024 * 1024;
+constexpr std::size_t kMaxPacketBytes = 4 * 1024 * 1024;
 constexpr std::size_t kMaxQueuedPackets = 16;
+
+bool SupportedVideoFormat(unsigned width, unsigned height,
+                          unsigned framesPerSecond) {
+    return (width == 1280 && height == 720 &&
+            (framesPerSecond == 30 || framesPerSecond == 60)) ||
+           (width == 1920 && height == 1080 && framesPerSecond == 60) ||
+           (width == 2560 && height == 1440 && framesPerSecond == 60);
+}
 
 std::runtime_error SocketError(const char* operation) {
     return std::runtime_error(std::string(operation) + " failed (WSA " +
@@ -136,11 +144,23 @@ void UpdateChecksum(PacketStatistics& statistics,
     }
 }
 
-sockaddr_in LoopbackAddress(unsigned short port) {
+sockaddr_in PrivateAddress(const std::string& ipv4,
+                           unsigned short port) {
     sockaddr_in address{};
     address.sin_family = AF_INET;
     address.sin_port = htons(port);
-    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (InetPtonA(AF_INET, ipv4.c_str(), &address.sin_addr) != 1) {
+        throw std::invalid_argument("Expected a numeric IPv4 address");
+    }
+    const std::uint32_t value = ntohl(address.sin_addr.s_addr);
+    const unsigned first = (value >> 24) & 0xffu;
+    const unsigned second = (value >> 16) & 0xffu;
+    if (first != 127 && first != 10 &&
+        !(first == 172 && second >= 16 && second <= 31) &&
+        !(first == 192 && second == 168)) {
+        throw std::invalid_argument(
+            "Only loopback or RFC1918 private IPv4 addresses are allowed");
+    }
     return address;
 }
 
@@ -154,6 +174,11 @@ void DisableNagle(SOCKET socket) {
 }
 
 } // namespace
+
+void ValidatePrivateIpv4Address(const std::string& ipv4) {
+    WinsockSession winsock;
+    static_cast<void>(PrivateAddress(ipv4, 1));
+}
 
 struct TcpPacketSender::Impl {
     struct QueuedPacket {
@@ -249,12 +274,13 @@ TcpPacketSender::~TcpPacketSender() {
     }
 }
 
-void TcpPacketSender::StartLoopback(unsigned short port) {
+void TcpPacketSender::Start(const std::string& receiverIpv4,
+                            unsigned short port) {
     if (impl_ || port == 0) {
         throw std::invalid_argument("Invalid or repeated TCP sender start");
     }
     auto state = std::make_unique<Impl>();
-    const sockaddr_in address = LoopbackAddress(port);
+    const sockaddr_in address = PrivateAddress(receiverIpv4, port);
     for (int attempt = 0; attempt < 20; ++attempt) {
         state->socket = SocketHandle(socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
         if (state->socket.Get() == INVALID_SOCKET) {
@@ -275,7 +301,7 @@ void TcpPacketSender::StartLoopback(unsigned short port) {
         state->socket.Close();
         if (error != WSAECONNREFUSED || attempt == 19) {
             throw std::runtime_error(
-                "connect to loopback receiver failed (WSA " +
+                "connect to receiver failed (WSA " +
                 std::to_string(error) + ")");
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -293,7 +319,7 @@ void TcpPacketSender::QueuePacket(const std::vector<std::uint8_t>& bytes,
                                   std::uint64_t captureReadyQpc,
                                   unsigned framesPerSecond) {
     if (!impl_ || bytes.empty() || bytes.size() > kMaxPacketBytes ||
-        (framesPerSecond != 30 && framesPerSecond != 60)) {
+        !SupportedVideoFormat(width, height, framesPerSecond)) {
         throw std::runtime_error("Invalid TCP H.264 packet");
     }
     {
@@ -337,8 +363,8 @@ PacketStatistics TcpPacketSender::Stop() {
     return statistics;
 }
 
-PacketStatistics ReceiveLoopbackPackets(
-    unsigned short port,
+PacketStatistics ReceivePackets(
+    const std::string& listenIpv4, unsigned short port,
     const std::function<void(const EncodedNetworkPacket&)>& onPacket,
     const std::atomic_bool* stopRequested) {
     if (port == 0) {
@@ -349,10 +375,16 @@ PacketStatistics ReceiveLoopbackPackets(
     if (listener.Get() == INVALID_SOCKET) {
         throw SocketError("create receiver socket");
     }
-    const sockaddr_in address = LoopbackAddress(port);
+    const BOOL exclusiveAddress = TRUE;
+    if (setsockopt(listener.Get(), SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
+                   reinterpret_cast<const char*>(&exclusiveAddress),
+                   sizeof(exclusiveAddress)) == SOCKET_ERROR) {
+        throw SocketError("reserve receiver address exclusively");
+    }
+    const sockaddr_in address = PrivateAddress(listenIpv4, port);
     if (bind(listener.Get(), reinterpret_cast<const sockaddr*>(&address),
              sizeof(address)) == SOCKET_ERROR) {
-        throw SocketError("bind loopback receiver");
+        throw SocketError("bind receiver");
     }
     if (listen(listener.Get(), 1) == SOCKET_ERROR) {
         throw SocketError("listen");
@@ -377,10 +409,11 @@ PacketStatistics ReceiveLoopbackPackets(
             value = ntohl(value);
         }
         const std::uint32_t length = header[5];
+        const bool supportedFormat =
+            SupportedVideoFormat(header[3], header[4], header[16]);
         if (header[0] != kMagic || header[1] != kVersion ||
-            header[2] != expectedSequence++ || header[3] != 1280 ||
-            header[4] != 720 || length == 0 || length > kMaxPacketBytes ||
-            (header[16] != 30 && header[16] != 60)) {
+            header[2] != expectedSequence++ || !supportedFormat ||
+            length == 0 || length > kMaxPacketBytes) {
             throw std::runtime_error("Invalid TCP H.264 packet header");
         }
         EncodedNetworkPacket packet;

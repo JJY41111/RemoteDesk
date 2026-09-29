@@ -16,6 +16,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 using Microsoft::WRL::ComPtr;
 
@@ -34,6 +35,111 @@ void CaptureWhileMoving(HWND window);
 void Log(const std::string& message) {
     std::ofstream stream("runtime.log", std::ios::app);
     stream << message << '\n';
+}
+
+std::string ReceiverAddressFromCommandLine(const wchar_t* commandLine) {
+    if (commandLine == nullptr) {
+        return "127.0.0.1";
+    }
+    const std::wstring arguments(commandLine);
+    constexpr wchar_t option[] = L"--connect=";
+    const auto optionStart = arguments.find(option);
+    if (optionStart == std::wstring::npos) {
+        return "127.0.0.1";
+    }
+    const auto addressStart =
+        optionStart + sizeof(option) / sizeof(option[0]) - 1;
+    const auto addressEnd = arguments.find_first_of(L" \t\r\n\"", addressStart);
+    const std::wstring address = arguments.substr(
+        addressStart, addressEnd == std::wstring::npos
+                          ? std::wstring::npos : addressEnd - addressStart);
+    if (address.empty() ||
+        !std::all_of(address.begin(), address.end(),
+                     [](wchar_t character) {
+                         return (character >= L'0' && character <= L'9') ||
+                                character == L'.';
+                     })) {
+        throw std::invalid_argument(
+            "--connect requires a numeric IPv4 address");
+    }
+    std::string asciiAddress;
+    asciiAddress.reserve(address.size());
+    for (const wchar_t character : address) {
+        asciiAddress.push_back(static_cast<char>(character));
+    }
+    return asciiAddress;
+}
+
+std::pair<UINT, UINT> DisplayFromCommandLine(const wchar_t* commandLine) {
+    if (commandLine == nullptr) return {0, 0};
+    const std::wstring arguments(commandLine);
+    constexpr wchar_t option[] = L"--display=";
+    const auto start = arguments.find(option);
+    if (start == std::wstring::npos) return {0, 0};
+    const auto valueStart = start + sizeof(option) / sizeof(option[0]) - 1;
+    const auto valueEnd = arguments.find_first_of(L" \t\r\n\"", valueStart);
+    const std::wstring value = arguments.substr(valueStart,
+        valueEnd == std::wstring::npos ? std::wstring::npos : valueEnd - valueStart);
+    if (value.size() != 3 || value[0] < L'0' || value[0] > L'9' ||
+        value[1] != L':' || value[2] < L'0' || value[2] > L'9') {
+        throw std::invalid_argument("--display expects adapter:output, such as 0:0");
+    }
+    return {static_cast<UINT>(value[0] - L'0'),
+            static_cast<UINT>(value[2] - L'0')};
+}
+
+unsigned short NetworkPortFromCommandLine(const wchar_t* commandLine) {
+    if (commandLine == nullptr) return 5000;
+    const std::wstring arguments(commandLine);
+    constexpr wchar_t option[] = L"--tcp-port=";
+    const auto start = arguments.find(option);
+    if (start == std::wstring::npos) return 5000;
+    const auto valueStart = start + sizeof(option) / sizeof(option[0]) - 1;
+    const auto valueEnd = arguments.find_first_of(L" \t\r\n\"", valueStart);
+    const std::wstring value = arguments.substr(
+        valueStart, valueEnd == std::wstring::npos ? std::wstring::npos
+                                                   : valueEnd - valueStart);
+    if (value.empty() || value.size() > 5 ||
+        !std::all_of(value.begin(), value.end(), [](wchar_t character) {
+            return character >= L'0' && character <= L'9';
+        })) {
+        throw std::invalid_argument("--tcp-port expects 1024 to 65535");
+    }
+    const unsigned port = static_cast<unsigned>(std::stoul(value));
+    if (port < 1024 || port > 65535) {
+        throw std::invalid_argument("--tcp-port expects 1024 to 65535");
+    }
+    return static_cast<unsigned short>(port);
+}
+
+unsigned NetworkTestDurationFromCommandLine(const wchar_t* commandLine) {
+    if (commandLine == nullptr) {
+        return 5;
+    }
+    const std::wstring arguments(commandLine);
+    constexpr wchar_t option[] = L"--duration=";
+    const auto optionStart = arguments.find(option);
+    if (optionStart == std::wstring::npos) {
+        return 5;
+    }
+    const auto valueStart =
+        optionStart + sizeof(option) / sizeof(option[0]) - 1;
+    const auto valueEnd = arguments.find_first_of(L" \t\r\n\"", valueStart);
+    const std::wstring value = arguments.substr(
+        valueStart, valueEnd == std::wstring::npos
+                        ? std::wstring::npos : valueEnd - valueStart);
+    if (value.empty() || value.size() > 3 ||
+        !std::all_of(value.begin(), value.end(),
+                     [](wchar_t character) {
+                         return character >= L'0' && character <= L'9';
+                     })) {
+        throw std::invalid_argument("--duration expects 1 to 300 seconds");
+    }
+    const unsigned seconds = static_cast<unsigned>(std::stoul(value));
+    if (seconds < 1 || seconds > 300) {
+        throw std::invalid_argument("--duration expects 1 to 300 seconds");
+    }
+    return seconds;
 }
 
 std::string HResultText(const char* operation, HRESULT hr) {
@@ -113,14 +219,32 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
 class DesktopCaptureApp {
 public:
     void Initialize(HWND window, bool automaticRecordingTest,
-                    bool automaticLoopbackTest, bool automaticNetworkTest,
-                    bool continuousNetwork, unsigned networkFramesPerSecond) {
+                    bool automaticLoopbackTest, bool loopback1080Test,
+                    bool loopbackNativeTest,
+                    bool cpuConversion, bool networkNative,
+                    bool automaticNetworkTest,
+                    bool continuousNetwork, unsigned networkFramesPerSecond,
+                    unsigned networkOutputWidth,
+                    unsigned networkOutputHeight,
+                    std::string networkReceiverIpv4,
+                    unsigned networkTestDurationSeconds,
+                    unsigned short networkTcpPort,
+                    UINT adapterIndex, UINT outputIndex) {
         window_ = window;
         automaticRecordingTest_ = automaticRecordingTest;
         automaticLoopbackTest_ = automaticLoopbackTest;
+        loopback1080Test_ = loopback1080Test;
+        loopbackNativeTest_ = loopbackNativeTest;
+        cpuConversion_ = cpuConversion;
+        networkNative_ = networkNative;
         automaticNetworkTest_ = automaticNetworkTest;
         continuousNetwork_ = continuousNetwork;
         networkFramesPerSecond_ = networkFramesPerSecond;
+        networkOutputWidth_ = networkOutputWidth;
+        networkOutputHeight_ = networkOutputHeight;
+        networkReceiverIpv4_ = std::move(networkReceiverIpv4);
+        networkTestDurationSeconds_ = networkTestDurationSeconds;
+        networkTcpPort_ = networkTcpPort;
         Log("initialize: start");
 
         if ((automaticNetworkTest_ || continuousNetwork_) &&
@@ -132,16 +256,27 @@ public:
         ThrowIfFailed(CreateDXGIFactory1(IID_PPV_ARGS(&factory_)),
                       "CreateDXGIFactory1");
         Log("initialize: DXGI factory created");
-        ThrowIfFailed(factory_->EnumAdapters1(0, &adapter_), "EnumAdapters1");
+        ThrowIfFailed(factory_->EnumAdapters1(adapterIndex, &adapter_), "EnumAdapters1");
         Log("initialize: adapter selected");
-        ThrowIfFailed(adapter_->EnumOutputs(0, &output_), "EnumOutputs");
-        Log("initialize: output selected");
+        ThrowIfFailed(adapter_->EnumOutputs(outputIndex, &output_), "EnumOutputs");
+        Log("initialize: output selected: adapter=" + std::to_string(adapterIndex) +
+            ", output=" + std::to_string(outputIndex));
 
         output_->GetDesc(&outputDescription_);
         width_ = static_cast<UINT>(outputDescription_.DesktopCoordinates.right -
                                    outputDescription_.DesktopCoordinates.left);
         height_ = static_cast<UINT>(outputDescription_.DesktopCoordinates.bottom -
                                     outputDescription_.DesktopCoordinates.top);
+        if (networkNative_) {
+            if (width_ != 2560 || height_ != 1440) {
+                throw std::invalid_argument(
+                    "Native stream currently requires a 2560x1440 capture source");
+            }
+            networkOutputWidth_ = width_;
+            networkOutputHeight_ = height_;
+        }
+        Log("initialize: capture source=" + std::to_string(width_) + "x" +
+            std::to_string(height_));
 
         constexpr UINT deviceFlags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
         const D3D_FEATURE_LEVEL requestedLevels[] = {
@@ -209,6 +344,7 @@ public:
         Log("initialize: complete");
 
         statisticsStart_ = Clock::now();
+        firstFrameWaitStart_ = statisticsStart_;
     }
 
     void Shutdown() {
@@ -246,6 +382,22 @@ public:
 
         if (result == DXGI_ERROR_WAIT_TIMEOUT) {
             ++timeouts_;
+            if (!firstFrameCaptured_ &&
+                !initialFrameFallbackAttempted_ &&
+                (automaticNetworkTest_ || continuousNetwork_) &&
+                Clock::now() - firstFrameWaitStart_ >=
+                    std::chrono::milliseconds(250)) {
+                initialFrameFallbackAttempted_ = true;
+                try {
+                    SeedFirstFrameFromScreen();
+                } catch (const std::exception& error) {
+                    Log(std::string("capture: initial GDI frame unavailable: ") +
+                        error.what());
+                }
+                if (firstFrameCaptured_) {
+                    ProcessAutomaticNetwork();
+                }
+            }
             EncodeCurrentFrameIfDue();
             ProcessLoopbackFrameIfDue();
             ProcessAutomaticLoopback();
@@ -278,8 +430,12 @@ public:
             }
         }
         DrawPointerIfNeeded();
-        context_->CopyResource(backBuffer_.Get(), latestFrameTexture_.Get());
-        ThrowIfFailed(swapChain_->Present(0, 0), "Present");
+        // The local preview competes with a full-screen game for GPU time.
+        // Live/network capture only needs latestFrameTexture_ for encoding.
+        if (!automaticNetworkTest_ && !continuousNetwork_) {
+            context_->CopyResource(backBuffer_.Get(), latestFrameTexture_.Get());
+            ThrowIfFailed(swapChain_->Present(0, 0), "Present");
+        }
 
         const LONGLONG sourceEventQpc = std::max(
             frameInfo.LastPresentTime.QuadPart,
@@ -316,6 +472,59 @@ public:
 
 private:
     using Clock = std::chrono::steady_clock;
+
+    void SeedFirstFrameFromScreen() {
+        HDC screenDc = GetDC(nullptr);
+        if (screenDc == nullptr) {
+            throw std::runtime_error("Get screen DC for initial frame failed");
+        }
+        HDC frameDc = nullptr;
+        const HRESULT getResult = latestFrameSurface_->GetDC(TRUE, &frameDc);
+        if (FAILED(getResult)) {
+            ReleaseDC(nullptr, screenDc);
+            ThrowIfFailed(getResult, "Get initial-frame GDI DC");
+        }
+        const BOOL copied = BitBlt(
+            frameDc, 0, 0, static_cast<int>(width_),
+            static_cast<int>(height_), screenDc,
+            outputDescription_.DesktopCoordinates.left,
+            outputDescription_.DesktopCoordinates.top,
+            SRCCOPY | CAPTUREBLT);
+        const DWORD copyError = copied ? 0 : GetLastError();
+        const HRESULT releaseResult = latestFrameSurface_->ReleaseDC(nullptr);
+        ReleaseDC(nullptr, screenDc);
+        ThrowIfFailed(releaseResult, "Release initial-frame GDI DC");
+        if (!copied) {
+            throw std::runtime_error(
+                "Copy initial desktop frame failed (Win32 " +
+                std::to_string(copyError) + ")");
+        }
+
+        CURSORINFO cursor{};
+        cursor.cbSize = sizeof(cursor);
+        if (GetCursorInfo(&cursor) &&
+            (cursor.flags & CURSOR_SHOWING) != 0) {
+            pointerVisible_ = true;
+            pointerPosition_.x = cursor.ptScreenPos.x -
+                                 outputDescription_.DesktopCoordinates.left;
+            pointerPosition_.y = cursor.ptScreenPos.y -
+                                 outputDescription_.DesktopCoordinates.top;
+            DrawPointerIfNeeded();
+        }
+        if (!automaticNetworkTest_ && !continuousNetwork_) {
+            context_->CopyResource(backBuffer_.Get(), latestFrameTexture_.Get());
+            ThrowIfFailed(swapChain_->Present(0, 0), "Present initial frame");
+        }
+        latestSourceEventQpc_ = 0;
+        LARGE_INTEGER captureReadyQpc{};
+        if (!QueryPerformanceCounter(&captureReadyQpc)) {
+            throw std::runtime_error("Query initial frame timer failed");
+        }
+        latestCaptureReadyQpc_ =
+            static_cast<std::uint64_t>(captureReadyQpc.QuadPart);
+        firstFrameCaptured_ = true;
+        Log("capture: seeded first frame from GDI after DXGI timeout");
+    }
 
     void DrawPointerIfNeeded() {
         if (!pointerVisible_) {
@@ -499,10 +708,24 @@ private:
         }
 
         if (!automaticLoopbackStarted_) {
-            loopback_.Start(device_.Get(), context_.Get(), width_, height_);
+            if (loopbackNativeTest_) {
+                loopback_.Start(device_.Get(), context_.Get(), width_, height_,
+                                width_, height_, 60, 24'000'000, true,
+                                !cpuConversion_);
+            } else if (loopback1080Test_) {
+                loopback_.Start(device_.Get(), context_.Get(), width_, height_,
+                                1920, 1080, 60, 16'000'000, true,
+                                !cpuConversion_);
+            } else {
+                loopback_.Start(device_.Get(), context_.Get(), width_, height_);
+            }
             automaticLoopbackStarted_ = true;
             automaticLoopbackStart_ = Clock::now();
-            Log("loopback test: started 5-second in-memory codec test");
+            Log(std::string("loopback test: started 5-second ") +
+                (loopbackNativeTest_ ? "native60" :
+                 loopback1080Test_ ? "1080p60" : "720p30") +
+                " codec test; conversion=" +
+                (loopback_.UsesGpuConversion() ? "gpu" : "cpu"));
             return;
         }
 
@@ -523,7 +746,7 @@ private:
         }
 
         if (!automaticNetworkStarted_) {
-            networkSender_.StartLoopback(5000);
+            networkSender_.Start(networkReceiverIpv4_, networkTcpPort_);
             loopback_.SetPacketCallback(
                 [this](const std::vector<std::uint8_t>& bytes,
                        LONGLONG sampleTime, LONGLONG sampleDuration,
@@ -537,15 +760,24 @@ private:
                         networkFramesPerSecond_);
                 });
             loopback_.Start(device_.Get(), context_.Get(), width_, height_,
-                            1280, 720, networkFramesPerSecond_,
-                            networkFramesPerSecond_ == 60 ? 8'000'000
-                                                          : 4'000'000,
-                            false);
+                            networkOutputWidth_, networkOutputHeight_,
+                            networkFramesPerSecond_,
+                            networkOutputHeight_ > 1080 ? 24'000'000
+                                : networkOutputHeight_ == 1080 ? 16'000'000
+                                : networkFramesPerSecond_ == 60 ? 8'000'000
+                                                                : 4'000'000,
+                            false, !cpuConversion_);
             automaticNetworkStarted_ = true;
             automaticNetworkStart_ = Clock::now();
+            Log(std::string("network live: conversion=") +
+                (loopback_.UsesGpuConversion() ? "D3D11 video processor" :
+                                                 "CPU fallback"));
             Log(std::string(continuousNetwork_ ? "network live" :
                                              "network test") +
-                ": connected to 127.0.0.1:5000 at 720p" +
+                ": connected to " + networkReceiverIpv4_ + ":" +
+                std::to_string(networkTcpPort_) + " at " +
+                std::to_string(networkOutputWidth_) + "x" +
+                std::to_string(networkOutputHeight_) + "@" +
                 std::to_string(networkFramesPerSecond_));
             return;
         }
@@ -556,7 +788,8 @@ private:
         const double elapsedSeconds = std::chrono::duration<double>(
                                           Clock::now() - automaticNetworkStart_)
                                           .count();
-        if (loopback_.IsRunning() && elapsedSeconds >= 5.0) {
+        if (loopback_.IsRunning() &&
+            elapsedSeconds >= networkTestDurationSeconds_) {
             StopNetwork("network test");
             PostMessage(window_, WM_CLOSE, 0, 0);
         }
@@ -574,6 +807,34 @@ private:
         const double averageCaptureMilliseconds =
             frames_ == 0 ? 0.0
                          : captureTimeMilliseconds_ / static_cast<double>(frames_);
+        if (automaticNetworkStarted_ && loopback_.IsRunning()) {
+            const auto& current = loopback_.Statistics();
+            const double conversionTotal =
+                current.averageConversionMilliseconds * current.submittedFrames;
+            const double encodeTotal =
+                current.averageEncodeMilliseconds * current.submittedFrames;
+            const auto submitted = current.submittedFrames - lastSubmitted_;
+            std::ostringstream performance;
+            performance << "network perf: capture_fps=" << std::fixed
+                        << std::setprecision(1) << fps
+                        << ", encoded_fps="
+                        << (current.encodedFrames - lastEncoded_) / seconds
+                        << ", capture_avg_ms=" << std::setprecision(2)
+                        << averageCaptureMilliseconds << ", convert_avg_ms="
+                        << (submitted ? (conversionTotal - lastConversionTotal_) /
+                                            submitted : 0.0)
+                        << ", encode_avg_ms="
+                        << (submitted ? (encodeTotal - lastEncodeTotal_) /
+                                            submitted : 0.0)
+                        << ", timeouts=" << timeouts_
+                        << ", conversion="
+                        << (loopback_.UsesGpuConversion() ? "gpu" : "cpu");
+            Log(performance.str());
+            lastSubmitted_ = current.submittedFrames;
+            lastEncoded_ = current.encodedFrames;
+            lastConversionTotal_ = conversionTotal;
+            lastEncodeTotal_ = encodeTotal;
+        }
 
         std::wostringstream title;
         title << L"RemoteDesk | " << width_ << L"x" << height_ << L" | "
@@ -586,7 +847,9 @@ private:
         } else if (loopback_.IsRunning()) {
             const auto& loopbackStats = loopback_.Statistics();
             if (automaticNetworkStarted_) {
-                title << L" | NET 720p" << networkFramesPerSecond_
+                title << L" | NET " << networkOutputWidth_ << L"x"
+                      << networkOutputHeight_ << L"@"
+                      << networkFramesPerSecond_
                       << L" enc " << loopbackStats.encodedFrames
                       << L" | convert/encode " << std::setprecision(1)
                       << loopbackStats.averageConversionMilliseconds << L"/"
@@ -632,21 +895,36 @@ private:
     unsigned long long pointerCompositedFrames_{};
 
     Clock::time_point statisticsStart_{};
+    Clock::time_point firstFrameWaitStart_{};
     unsigned long long frames_{};
     unsigned long long timeouts_{};
     double captureTimeMilliseconds_{};
+    std::uint64_t lastSubmitted_{};
+    std::uint64_t lastEncoded_{};
+    double lastConversionTotal_{};
+    double lastEncodeTotal_{};
     bool firstFrameCaptured_{};
+    bool initialFrameFallbackAttempted_{};
     std::uint64_t latestSourceEventQpc_{};
     std::uint64_t latestCaptureReadyQpc_{};
     bool automaticRecordingTest_{};
     bool automaticRecordingStarted_{};
     Clock::time_point automaticRecordingStart_{};
     bool automaticLoopbackTest_{};
+    bool loopback1080Test_{};
+    bool loopbackNativeTest_{};
+    bool cpuConversion_{};
+    bool networkNative_{};
     bool automaticLoopbackStarted_{};
     Clock::time_point automaticLoopbackStart_{};
     bool automaticNetworkTest_{};
     bool continuousNetwork_{};
     unsigned networkFramesPerSecond_{30};
+    unsigned networkOutputWidth_{1280};
+    unsigned networkOutputHeight_{720};
+    std::string networkReceiverIpv4_{"127.0.0.1"};
+    unsigned networkTestDurationSeconds_{5};
+    unsigned short networkTcpPort_{5000};
     bool automaticNetworkStarted_{};
     Clock::time_point automaticNetworkStart_{};
 };
@@ -721,7 +999,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine,
             wcsstr(commandLine, L"--record-test") != nullptr;
         const bool automaticLoopbackTest =
             commandLine != nullptr &&
-            wcsstr(commandLine, L"--loopback-test") != nullptr;
+            (wcsstr(commandLine, L"--loopback-test") != nullptr ||
+             wcsstr(commandLine, L"--loopback-1080-60-test") != nullptr ||
+             wcsstr(commandLine, L"--loopback-native-60-test") != nullptr);
+        const bool loopback1080Test = commandLine != nullptr &&
+            wcsstr(commandLine, L"--loopback-1080-60-test") != nullptr;
+        const bool loopbackNativeTest = commandLine != nullptr &&
+            wcsstr(commandLine, L"--loopback-native-60-test") != nullptr;
+        const bool cpuConversion = commandLine != nullptr &&
+            wcsstr(commandLine, L"--cpu-conversion") != nullptr;
         const bool network30Test = commandLine != nullptr &&
             wcsstr(commandLine, L"--network-test") != nullptr;
         const bool network60Test = commandLine != nullptr &&
@@ -730,21 +1016,75 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine,
             wcsstr(commandLine, L"--network-live") != nullptr;
         const bool network60Live = commandLine != nullptr &&
             wcsstr(commandLine, L"--network-60-live") != nullptr;
+        const bool network1080Test = commandLine != nullptr &&
+            wcsstr(commandLine, L"--network-1080-60-test") != nullptr;
+        const bool network1080Live = commandLine != nullptr &&
+            wcsstr(commandLine, L"--network-1080-60-live") != nullptr;
+        const bool networkNativeTest = commandLine != nullptr &&
+            wcsstr(commandLine, L"--network-native-60-test") != nullptr;
+        const bool networkNativeLive = commandLine != nullptr &&
+            wcsstr(commandLine, L"--network-native-60-live") != nullptr;
         if (static_cast<int>(automaticRecordingTest) +
                 static_cast<int>(automaticLoopbackTest) +
                 static_cast<int>(network30Test) +
                 static_cast<int>(network60Test) +
                 static_cast<int>(network30Live) +
-                static_cast<int>(network60Live) > 1) {
+                static_cast<int>(network60Live) +
+                static_cast<int>(network1080Test) +
+                static_cast<int>(network1080Live) +
+                static_cast<int>(networkNativeTest) +
+                static_cast<int>(networkNativeLive) > 1) {
             throw std::invalid_argument("Choose only one test or live mode");
         }
-        const bool automaticNetworkTest = network30Test || network60Test;
-        const bool continuousNetwork = network30Live || network60Live;
+        const bool automaticNetworkTest =
+            network30Test || network60Test || network1080Test ||
+            networkNativeTest;
+        const bool continuousNetwork =
+            network30Live || network60Live || network1080Live ||
+            networkNativeLive;
         const unsigned networkFramesPerSecond =
-            network60Test || network60Live ? 60u : 30u;
+            network60Test || network60Live || network1080Test ||
+                    network1080Live || networkNativeTest || networkNativeLive
+                ? 60u
+                : 30u;
+        const bool network1080 = network1080Test || network1080Live;
+        const bool networkNative = networkNativeTest || networkNativeLive;
+        const bool durationSpecified =
+            commandLine != nullptr &&
+            wcsstr(commandLine, L"--duration=") != nullptr;
+        if (durationSpecified && !automaticNetworkTest) {
+            throw std::invalid_argument(
+                "--duration requires a --network-*-test mode");
+        }
+        const unsigned networkTestDurationSeconds =
+            NetworkTestDurationFromCommandLine(commandLine);
+        const unsigned short networkTcpPort =
+            NetworkPortFromCommandLine(commandLine);
+        const std::string receiverIpv4 =
+            ReceiverAddressFromCommandLine(commandLine);
+        const auto [adapterIndex, outputIndex] =
+            DisplayFromCommandLine(commandLine);
+        const bool connectSpecified =
+            commandLine != nullptr &&
+            wcsstr(commandLine, L"--connect=") != nullptr;
+        if (connectSpecified && !automaticNetworkTest &&
+            !continuousNetwork) {
+            throw std::invalid_argument(
+                "--connect requires a --network-* mode");
+        }
+        if (automaticNetworkTest || continuousNetwork) {
+            remotedesk::ValidatePrivateIpv4Address(receiverIpv4);
+        }
         application.Initialize(window, automaticRecordingTest,
-                               automaticLoopbackTest, automaticNetworkTest,
-                               continuousNetwork, networkFramesPerSecond);
+                               automaticLoopbackTest, loopback1080Test,
+                               loopbackNativeTest,
+                               cpuConversion, networkNative,
+                               automaticNetworkTest,
+                               continuousNetwork, networkFramesPerSecond,
+                               network1080 ? 1920u : 1280u,
+                               network1080 ? 1080u : 720u, receiverIpv4,
+                               networkTestDurationSeconds, networkTcpPort,
+                               adapterIndex, outputIndex);
         gApplication = &application;
 
         ShowWindow(window, showCommand);

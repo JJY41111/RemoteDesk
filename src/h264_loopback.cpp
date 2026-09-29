@@ -106,7 +106,9 @@ ComPtr<IMFSample> CreateOutputSample(const MFT_OUTPUT_STREAM_INFO& streamInfo,
 
 std::vector<SampleBytes> DrainTransform(IMFTransform* transform,
                                         DWORD minimumOutputSize,
-                                        const char* operation) {
+                                        const char* operation,
+                                        UINT visibleWidth = 0,
+                                        UINT visibleHeight = 0) {
     MFT_OUTPUT_STREAM_INFO streamInfo{};
     Check(transform->GetOutputStreamInfo(0, &streamInfo),
           "Get transform output stream info");
@@ -129,9 +131,40 @@ std::vector<SampleBytes> DrainTransform(IMFTransform* transform,
             break;
         }
         if (result == MF_E_TRANSFORM_STREAM_CHANGE) {
-            throw std::runtime_error(
-                "Media Foundation transform requested an unexpected format "
-                "change");
+            if (visibleWidth == 0 || visibleHeight == 0) {
+                throw std::runtime_error(
+                    "Media Foundation encoder requested an unexpected format change");
+            }
+            bool selected = false;
+            for (DWORD index = 0;; ++index) {
+                ComPtr<IMFMediaType> offered;
+                const HRESULT available =
+                    transform->GetOutputAvailableType(0, index, &offered);
+                if (available == MF_E_NO_MORE_TYPES) break;
+                Check(available, "Get updated decoder output type");
+                GUID subtype{};
+                UINT32 width = 0;
+                UINT32 height = 0;
+                if (FAILED(offered->GetGUID(MF_MT_SUBTYPE, &subtype)) ||
+                    FAILED(MFGetAttributeSize(offered.Get(), MF_MT_FRAME_SIZE,
+                                              &width, &height)) ||
+                    subtype != MFVideoFormat_NV12 ||
+                    width != visibleWidth || height < visibleHeight ||
+                    height > ((visibleHeight + 15u) & ~15u)) {
+                    continue;
+                }
+                if (SUCCEEDED(transform->SetOutputType(0, offered.Get(), 0))) {
+                    selected = true;
+                    break;
+                }
+            }
+            if (!selected) {
+                throw std::runtime_error(
+                    "Decoder offered no compatible NV12 output type");
+            }
+            Check(transform->GetOutputStreamInfo(0, &streamInfo),
+                  "Refresh decoder output stream info");
+            continue;
         }
         Check(result, operation);
 
@@ -223,7 +256,7 @@ void H264Loopback::SetPacketCallback(std::function<void(
 void H264Loopback::Start(ID3D11Device* device, ID3D11DeviceContext* context,
                          UINT sourceWidth, UINT sourceHeight, UINT outputWidth,
                          UINT outputHeight, UINT framesPerSecond, UINT bitrate,
-                         bool decodeLocally) {
+                         bool decodeLocally, bool preferGpuConversion) {
     if (running_) {
         throw std::runtime_error("H.264 loopback is already active");
     }
@@ -260,7 +293,7 @@ void H264Loopback::Start(ID3D11Device* device, ID3D11DeviceContext* context,
         Check(encodedType->SetUINT32(MF_MT_AVG_BITRATE, bitrate),
               "Set loopback H.264 bitrate");
         Check(encodedType->SetUINT32(MF_MT_MPEG2_PROFILE,
-                                     eAVEncH264VProfile_Main),
+                                     eAVEncH264VProfile_Base),
               "Set loopback H.264 profile");
         Check(encoder_->SetOutputType(0, encodedType.Get(), 0),
               "Set H.264 encoder output type");
@@ -312,7 +345,22 @@ void H264Loopback::Start(ID3D11Device* device, ID3D11DeviceContext* context,
         sampleDuration_ = 10'000'000LL / framesPerSecond;
         nextSampleTime_ = 0;
         nextFrameDue_ = Clock::now();
+        streamStartedAt_ = nextFrameDue_;
         nv12Frame_.resize(outputWidth_ * outputHeight_ * 3 / 2);
+        sourceXOffsets_.resize(outputWidth_);
+        sourceYIndexes_.resize(outputHeight_);
+        for (UINT x = 0; x < outputWidth_; ++x) {
+            sourceXOffsets_[x] = static_cast<UINT>(
+                static_cast<std::uint64_t>(x) * sourceWidth_ /
+                outputWidth_ * 4u);
+        }
+        for (UINT y = 0; y < outputHeight_; ++y) {
+            sourceYIndexes_[y] = static_cast<UINT>(
+                static_cast<std::uint64_t>(y) * sourceHeight_ /
+                outputHeight_);
+        }
+        gpuConversion_ = preferGpuConversion &&
+                         TryInitializeGpuConversion(device, context);
         encodedQueue_.clear();
         sourceTimestampsBySample_.clear();
         statistics_ = {};
@@ -345,8 +393,14 @@ bool H264Loopback::ProcessFrameIfDue(ID3D11Texture2D* sourceTexture,
         return false;
     }
 
-    context_->CopyResource(stagingTexture_.Get(), sourceTexture);
-    ConvertLatestFrameToNv12();
+    if (!gpuConversion_ || !ConvertOnGpu(sourceTexture)) {
+        context_->CopyResource(stagingTexture_.Get(), sourceTexture);
+        ConvertLatestFrameToNv12();
+    }
+    // Preserve elapsed time when capture/encoding misses a scheduled frame.
+    // Counting only submitted frames makes the RTP media clock run slow.
+    nextSampleTime_ = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        now - streamStartedAt_).count() / 100;
     if (packetCallback_) {
         sourceTimestampsBySample_[nextSampleTime_] = {
             sourceEventQpc, captureReadyQpc};
@@ -360,7 +414,6 @@ bool H264Loopback::ProcessFrameIfDue(ID3D11Texture2D* sourceTexture,
     }
 
     ++statistics_.submittedFrames;
-    nextSampleTime_ += sampleDuration_;
     const auto interval =
         std::chrono::nanoseconds(1'000'000'000LL / framesPerSecond_);
     nextFrameDue_ += interval;
@@ -384,6 +437,141 @@ UINT H264Loopback::MillisecondsUntilNextFrame() const noexcept {
     return static_cast<UINT>(std::clamp<std::int64_t>(remaining, 1, 16));
 }
 
+bool H264Loopback::TryInitializeGpuConversion(
+    ID3D11Device* device, ID3D11DeviceContext* context) {
+    if (FAILED(device->QueryInterface(IID_PPV_ARGS(&videoDevice_))) ||
+        FAILED(context->QueryInterface(IID_PPV_ARGS(&videoContext_)))) {
+        return false;
+    }
+
+    D3D11_VIDEO_PROCESSOR_CONTENT_DESC content{};
+    content.InputFrameFormat = D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE;
+    content.InputFrameRate = {framesPerSecond_, 1};
+    content.InputWidth = sourceWidth_;
+    content.InputHeight = sourceHeight_;
+    content.OutputFrameRate = {framesPerSecond_, 1};
+    content.OutputWidth = outputWidth_;
+    content.OutputHeight = outputHeight_;
+    content.Usage = D3D11_VIDEO_USAGE_PLAYBACK_NORMAL;
+    if (FAILED(videoDevice_->CreateVideoProcessorEnumerator(
+            &content, &videoEnumerator_))) {
+        return false;
+    }
+    UINT inputSupport = 0;
+    UINT outputSupport = 0;
+    if (FAILED(videoEnumerator_->CheckVideoProcessorFormat(
+            DXGI_FORMAT_B8G8R8A8_UNORM, &inputSupport)) ||
+        FAILED(videoEnumerator_->CheckVideoProcessorFormat(
+            DXGI_FORMAT_NV12, &outputSupport)) ||
+        !(inputSupport & D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_INPUT) ||
+        !(outputSupport & D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_OUTPUT) ||
+        FAILED(videoDevice_->CreateVideoProcessor(
+            videoEnumerator_.Get(), 0, &videoProcessor_))) {
+        return false;
+    }
+
+    D3D11_TEXTURE2D_DESC output{};
+    output.Width = outputWidth_;
+    output.Height = outputHeight_;
+    output.MipLevels = 1;
+    output.ArraySize = 1;
+    output.Format = DXGI_FORMAT_NV12;
+    output.SampleDesc.Count = 1;
+    output.Usage = D3D11_USAGE_DEFAULT;
+    output.BindFlags = D3D11_BIND_RENDER_TARGET;
+    if (FAILED(device->CreateTexture2D(&output, nullptr, &gpuNv12Texture_))) {
+        return false;
+    }
+    D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC outputView{};
+    outputView.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
+    if (FAILED(videoDevice_->CreateVideoProcessorOutputView(
+            gpuNv12Texture_.Get(), videoEnumerator_.Get(), &outputView,
+            &videoOutputView_))) {
+        return false;
+    }
+    output.Usage = D3D11_USAGE_STAGING;
+    output.BindFlags = 0;
+    output.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    if (FAILED(device->CreateTexture2D(&output, nullptr, &gpuNv12Staging_))) {
+        return false;
+    }
+
+    RECT sourceRect{0, 0, static_cast<LONG>(sourceWidth_),
+                    static_cast<LONG>(sourceHeight_)};
+    RECT targetRect{0, 0, static_cast<LONG>(outputWidth_),
+                    static_cast<LONG>(outputHeight_)};
+    videoContext_->VideoProcessorSetStreamFrameFormat(
+        videoProcessor_.Get(), 0, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE);
+    videoContext_->VideoProcessorSetStreamSourceRect(
+        videoProcessor_.Get(), 0, TRUE, &sourceRect);
+    videoContext_->VideoProcessorSetStreamDestRect(
+        videoProcessor_.Get(), 0, TRUE, &targetRect);
+    videoContext_->VideoProcessorSetOutputTargetRect(
+        videoProcessor_.Get(), TRUE, &targetRect);
+    videoContext_->VideoProcessorSetStreamAutoProcessingMode(
+        videoProcessor_.Get(), 0, FALSE);
+    D3D11_VIDEO_PROCESSOR_COLOR_SPACE rgb{};
+    rgb.RGB_Range = 1;
+    D3D11_VIDEO_PROCESSOR_COLOR_SPACE yuv{};
+    yuv.YCbCr_Matrix = 1;
+    videoContext_->VideoProcessorSetStreamColorSpace(
+        videoProcessor_.Get(), 0, &rgb);
+    videoContext_->VideoProcessorSetOutputColorSpace(
+        videoProcessor_.Get(), &yuv);
+    return true;
+}
+
+bool H264Loopback::ConvertOnGpu(ID3D11Texture2D* sourceTexture) {
+    const auto conversionStart = Clock::now();
+    if (videoInputTexture_.Get() != sourceTexture) {
+        videoInputView_.Reset();
+        D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC inputView{};
+        inputView.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
+        if (FAILED(videoDevice_->CreateVideoProcessorInputView(
+                sourceTexture, videoEnumerator_.Get(), &inputView,
+                &videoInputView_))) {
+            gpuConversion_ = false;
+            return false;
+        }
+        videoInputTexture_ = sourceTexture;
+    }
+    D3D11_VIDEO_PROCESSOR_STREAM stream{};
+    stream.Enable = TRUE;
+    stream.pInputSurface = videoInputView_.Get();
+    if (FAILED(videoContext_->VideoProcessorBlt(
+            videoProcessor_.Get(), videoOutputView_.Get(), 0, 1, &stream))) {
+        gpuConversion_ = false;
+        return false;
+    }
+    context_->CopyResource(gpuNv12Staging_.Get(), gpuNv12Texture_.Get());
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if (FAILED(context_->Map(gpuNv12Staging_.Get(), 0, D3D11_MAP_READ,
+                             0, &mapped))) {
+        gpuConversion_ = false;
+        return false;
+    }
+    const auto* source = static_cast<const std::uint8_t*>(mapped.pData);
+    auto* destination = nv12Frame_.data();
+    for (UINT row = 0; row < outputHeight_; ++row) {
+        std::memcpy(destination + static_cast<std::size_t>(row) * outputWidth_,
+                    source + static_cast<std::size_t>(row) * mapped.RowPitch,
+                    outputWidth_);
+    }
+    auto* uvDestination = destination + outputWidth_ * outputHeight_;
+    const auto* uvSource = source +
+        static_cast<std::size_t>(outputHeight_) * mapped.RowPitch;
+    for (UINT row = 0; row < outputHeight_ / 2; ++row) {
+        std::memcpy(uvDestination + static_cast<std::size_t>(row) * outputWidth_,
+                    uvSource + static_cast<std::size_t>(row) * mapped.RowPitch,
+                    outputWidth_);
+    }
+    context_->Unmap(gpuNv12Staging_.Get(), 0);
+    totalConversionMilliseconds_ +=
+        std::chrono::duration<double, std::milli>(Clock::now() - conversionStart)
+            .count();
+    return true;
+}
+
 void H264Loopback::ConvertLatestFrameToNv12() {
     const auto conversionStart = Clock::now();
     D3D11_MAPPED_SUBRESOURCE mapped{};
@@ -394,35 +582,29 @@ void H264Loopback::ConvertLatestFrameToNv12() {
     auto* yPlane = nv12Frame_.data();
     auto* uvPlane = yPlane + outputWidth_ * outputHeight_;
 
-    for (UINT y = 0; y < outputHeight_; ++y) {
-        const UINT sourceY = y * sourceHeight_ / outputHeight_;
-        const auto* sourceRow = source + sourceY * mapped.RowPitch;
-        for (UINT x = 0; x < outputWidth_; ++x) {
-            const UINT sourceX = x * sourceWidth_ / outputWidth_;
-            const auto* pixel = sourceRow + sourceX * 4;
-            const int blue = pixel[0];
-            const int green = pixel[1];
-            const int red = pixel[2];
-            yPlane[y * outputWidth_ + x] = ClampByte(
-                ((66 * red + 129 * green + 25 * blue + 128) >> 8) + 16);
-        }
-    }
-
+    // The 2x2 block writes four Y values and one interleaved UV pair while
+    // reading each source pixel only once. Source coordinates are precomputed
+    // in Start, so the hot loop has no scaling divisions.
     for (UINT y = 0; y < outputHeight_; y += 2) {
+        const std::uint8_t* sourceRows[2] = {
+            source + static_cast<std::size_t>(sourceYIndexes_[y]) *
+                         mapped.RowPitch,
+            source + static_cast<std::size_t>(sourceYIndexes_[y + 1]) *
+                         mapped.RowPitch};
         for (UINT x = 0; x < outputWidth_; x += 2) {
             int sumU = 0;
             int sumV = 0;
             for (UINT offsetY = 0; offsetY < 2; ++offsetY) {
-                const UINT sourceY =
-                    (y + offsetY) * sourceHeight_ / outputHeight_;
-                const auto* sourceRow = source + sourceY * mapped.RowPitch;
+                const auto* sourceRow = sourceRows[offsetY];
                 for (UINT offsetX = 0; offsetX < 2; ++offsetX) {
-                    const UINT sourceX =
-                        (x + offsetX) * sourceWidth_ / outputWidth_;
-                    const auto* pixel = sourceRow + sourceX * 4;
+                    const auto* pixel =
+                        sourceRow + sourceXOffsets_[x + offsetX];
                     const int blue = pixel[0];
                     const int green = pixel[1];
                     const int red = pixel[2];
+                    yPlane[(y + offsetY) * outputWidth_ + x + offsetX] =
+                        ClampByte(((66 * red + 129 * green + 25 * blue +
+                                    128) >> 8) + 16);
                     sumU += ((-38 * red - 74 * green + 112 * blue + 128) >>
                              8) +
                             128;
@@ -517,11 +699,14 @@ void H264Loopback::DecodeQueuedPackets() {
 }
 
 void H264Loopback::DrainDecoder() {
-    const DWORD decodedFrameSize = outputWidth_ * outputHeight_ * 3 / 2;
+    const DWORD decodedFrameSize =
+        outputWidth_ * ((outputHeight_ + 15u) & ~15u) * 3 / 2;
     auto decodedSamples = DrainTransform(decoder_.Get(), decodedFrameSize,
-                                         "Get H.264 decoder output");
+                                         "Get H.264 decoder output",
+                                         outputWidth_, outputHeight_);
     for (const auto& sample : decodedSamples) {
-        if (sample.bytes.size() >= decodedFrameSize) {
+        if (sample.bytes.size() >=
+            static_cast<std::size_t>(outputWidth_) * outputHeight_ * 3 / 2) {
             const auto nonBlack = std::any_of(
                 sample.bytes.begin(),
                 sample.bytes.begin() + outputWidth_ * outputHeight_,
@@ -574,8 +759,20 @@ void H264Loopback::Stop(bool emitFinalPackets) {
     encoder_.Reset();
     decoder_.Reset();
     stagingTexture_.Reset();
+    videoInputView_.Reset();
+    videoInputTexture_.Reset();
+    videoOutputView_.Reset();
+    gpuNv12Staging_.Reset();
+    gpuNv12Texture_.Reset();
+    videoProcessor_.Reset();
+    videoEnumerator_.Reset();
+    videoContext_.Reset();
+    videoDevice_.Reset();
+    gpuConversion_ = false;
     context_.Reset();
     nv12Frame_.clear();
+    sourceXOffsets_.clear();
+    sourceYIndexes_.clear();
     encodedQueue_.clear();
     sourceTimestampsBySample_.clear();
     running_ = false;

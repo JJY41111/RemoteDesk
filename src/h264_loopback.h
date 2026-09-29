@@ -36,7 +36,8 @@ public:
     void Start(ID3D11Device* device, ID3D11DeviceContext* context,
                UINT sourceWidth, UINT sourceHeight, UINT outputWidth = 1280,
                UINT outputHeight = 720, UINT framesPerSecond = 30,
-               UINT bitrate = 4'000'000, bool decodeLocally = true);
+               UINT bitrate = 4'000'000, bool decodeLocally = true,
+               bool preferGpuConversion = true);
     bool ProcessFrameIfDue(ID3D11Texture2D* sourceTexture,
                            std::uint64_t sourceEventQpc = 0,
                            std::uint64_t captureReadyQpc = 0);
@@ -51,6 +52,7 @@ public:
     }
     [[nodiscard]] UINT OutputWidth() const noexcept { return outputWidth_; }
     [[nodiscard]] UINT OutputHeight() const noexcept { return outputHeight_; }
+    [[nodiscard]] bool UsesGpuConversion() const noexcept { return gpuConversion_; }
     [[nodiscard]] bool DecodesLocally() const noexcept { return decodeLocally_; }
     [[nodiscard]] UINT MillisecondsUntilNextFrame() const noexcept;
 
@@ -70,6 +72,9 @@ private:
     };
 
     void ConvertLatestFrameToNv12();
+    bool TryInitializeGpuConversion(ID3D11Device* device,
+                                    ID3D11DeviceContext* context);
+    bool ConvertOnGpu(ID3D11Texture2D* sourceTexture);
     void SubmitNv12Frame();
     void DrainEncoder();
     void DecodeQueuedPackets();
@@ -78,6 +83,15 @@ private:
 
     Microsoft::WRL::ComPtr<ID3D11DeviceContext> context_;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> stagingTexture_;
+    Microsoft::WRL::ComPtr<ID3D11VideoDevice> videoDevice_;
+    Microsoft::WRL::ComPtr<ID3D11VideoContext> videoContext_;
+    Microsoft::WRL::ComPtr<ID3D11VideoProcessorEnumerator> videoEnumerator_;
+    Microsoft::WRL::ComPtr<ID3D11VideoProcessor> videoProcessor_;
+    Microsoft::WRL::ComPtr<ID3D11VideoProcessorInputView> videoInputView_;
+    Microsoft::WRL::ComPtr<ID3D11VideoProcessorOutputView> videoOutputView_;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> gpuNv12Texture_;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> gpuNv12Staging_;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> videoInputTexture_;
     Microsoft::WRL::ComPtr<IMFTransform> encoder_;
     Microsoft::WRL::ComPtr<IMFTransform> decoder_;
 
@@ -87,6 +101,8 @@ private:
                        std::uint64_t, std::uint64_t)>
         packetCallback_;
     std::vector<std::uint8_t> nv12Frame_;
+    std::vector<UINT> sourceXOffsets_;
+    std::vector<UINT> sourceYIndexes_;
 
     UINT sourceWidth_{};
     UINT sourceHeight_{};
@@ -96,6 +112,7 @@ private:
     LONGLONG nextSampleTime_{};
     LONGLONG sampleDuration_{};
     Clock::time_point nextFrameDue_{};
+    Clock::time_point streamStartedAt_{};
 
     LoopbackStatistics statistics_{};
     double totalConversionMilliseconds_{};
@@ -105,6 +122,7 @@ private:
     bool mediaFoundationStarted_{};
     bool running_{};
     bool decodeLocally_{true};
+    bool gpuConversion_{};
 };
 
 } // namespace remotedesk

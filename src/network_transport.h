@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace remotedesk {
@@ -27,6 +28,8 @@ struct EncodedNetworkPacket {
     std::uint64_t receivedQpc{};
 };
 
+void ValidatePrivateIpv4Address(const std::string& ipv4);
+
 class TcpPacketSender {
 public:
     TcpPacketSender();
@@ -34,7 +37,7 @@ public:
     TcpPacketSender& operator=(const TcpPacketSender&) = delete;
     ~TcpPacketSender();
 
-    void StartLoopback(unsigned short port);
+    void Start(const std::string& receiverIpv4, unsigned short port);
     void QueuePacket(const std::vector<std::uint8_t>& bytes,
                      std::uint64_t sampleTime,
                      std::uint64_t sampleDuration,
@@ -49,8 +52,8 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-PacketStatistics ReceiveLoopbackPackets(
-    unsigned short port,
+PacketStatistics ReceivePackets(
+    const std::string& listenIpv4, unsigned short port,
     const std::function<void(const EncodedNetworkPacket&)>& onPacket = {},
     const std::atomic_bool* stopRequested = nullptr);
 

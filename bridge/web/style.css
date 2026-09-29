@@ -1,0 +1,28 @@
+:root { font-family: system-ui, sans-serif; color-scheme: dark; background: #10151d; color: #f2f5f7; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+header { display: flex; align-items: center; justify-content: space-between; padding: 12px 20px; background: #18212c; }
+h1 { font-size: 19px; margin: 0; }
+main { margin: 0 auto; padding: 16px; }
+button, input, textarea, select { font: inherit; }
+#syncMode, #videoMode { width: 100%; padding: 10px; margin-bottom: 10px; background: #222f3e; color: white; border: 1px solid #758298; border-radius: 7px; }
+button { padding: 10px 16px; background: #3279eb; border: 0; border-radius: 7px; color: white; }
+button:disabled { opacity: .45; }
+#pairing { max-width: 500px; margin: 8vh auto; }
+#pairing label { display: block; margin-bottom: 12px; }
+.row { display: flex; gap: 8px; }
+#code { width: 12em; max-width: 65%; padding: 10px; border-radius: 7px; border: 1px solid #758298; background: #222f3e; color: white; letter-spacing: .16em; }
+#screenViewport { width: 100%; max-height: 77vh; overflow: auto; overscroll-behavior: contain; background: #000; }
+#screen { display: block; width: 100%; height: auto; max-height: 77vh; object-fit: contain; background: #000; touch-action: none; }
+#screenViewport.zoomed { height: 77vh; }
+#screenViewport.zoomed #screen { width: 150%; max-width: none; max-height: none; }
+.toolbar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 12px 0; }
+.toolbar label { display: flex; align-items: center; gap: 4px; }
+#typing { width: 100%; height: 54px; padding: 8px; border-radius: 7px; background: #222f3e; color: white; border: 1px solid #758298; }
+#keyCapture { width: 100%; height: 54px; padding: 8px; border-radius: 7px; background: #263e59; color: white; border: 1px solid #758298; }
+#keyCapture:focus { outline: 3px solid #8bbaff; }
+#metrics { font-variant-numeric: tabular-nums; color: #a8d9ff; }
+#videoStatus, #audioStatus { margin-top: 6px; color: #ffd288; }
+#inputStatus, #inputMetrics, #gamepadStatus, #gamepadHostStatus, #latencyStatus, #displayStatus { margin-top: 6px; color: #a8d9ff; }
+p { color: #bbc5d0; line-height: 1.4; }
+[hidden] { display: none !important; }

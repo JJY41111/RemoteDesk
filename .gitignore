@@ -10,3 +10,8 @@
 *.suo
 *.VC.db
 *.VC.VC.opendb
+/.npm-cache/
+/bridge/node_modules/
+/bridge/private/
+/bridge/test-results/
+/bridge/*.log

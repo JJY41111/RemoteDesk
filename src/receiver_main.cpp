@@ -31,6 +31,8 @@ constexpr std::size_t kMaxLatencySamples = 1800;
 
 struct FrameSnapshot {
     std::vector<std::uint8_t> bgra;
+    unsigned width{};
+    unsigned height{};
     std::uint64_t serial{};
     std::uint64_t sourceEventQpc{};
     std::uint64_t captureReadyQpc{};
@@ -54,6 +56,8 @@ struct SourceLatencySample {
 
 struct ViewerState {
     HWND window{};
+    std::string listenIpv4{"127.0.0.1"};
+    bool sameHostTiming{true};
     std::mutex mutex;
     std::shared_ptr<const FrameSnapshot> latestFrame;
     remotedesk::PacketStatistics packets;
@@ -70,8 +74,11 @@ struct ViewerState {
     std::uint64_t lastPaintedQpc{};
     double maxPaintGapMilliseconds{};
     std::uint64_t lastTimedSourceEventQpc{};
+    unsigned windowStreamWidth{1280};
+    unsigned windowStreamHeight{720};
     double qpcTicksPerMillisecond{};
     std::deque<std::uint64_t> recentPaintQpc;
+    std::deque<double> recentReceiveToPaintMilliseconds;
     std::deque<LatencySample> recentLatencySamples;
     std::deque<SourceLatencySample> recentSourceLatencySamples;
 };
@@ -88,7 +95,9 @@ void SaveTestFrame(ViewerState& state) {
         std::lock_guard lock(state.mutex);
         frame = state.latestFrame;
     }
-    if (!frame || frame->bgra.size() != 1280u * 720u * 4u) {
+    if (!frame || frame->bgra.size() !=
+                      static_cast<std::size_t>(frame->width) *
+                          frame->height * 4u) {
         throw std::runtime_error("No complete preview frame to save");
     }
     BITMAPFILEHEADER fileHeader{};
@@ -99,8 +108,8 @@ void SaveTestFrame(ViewerState& state) {
                         static_cast<DWORD>(frame->bgra.size());
     BITMAPINFOHEADER bitmapHeader{};
     bitmapHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bitmapHeader.biWidth = 1280;
-    bitmapHeader.biHeight = -720;
+    bitmapHeader.biWidth = static_cast<LONG>(frame->width);
+    bitmapHeader.biHeight = -static_cast<LONG>(frame->height);
     bitmapHeader.biPlanes = 1;
     bitmapHeader.biBitCount = 32;
     bitmapHeader.biCompression = BI_RGB;
@@ -148,23 +157,28 @@ LRESULT CALLBACK ViewerWindowProc(HWND window, UINT message, WPARAM wParam,
         if (frame) {
             BITMAPINFO bitmap{};
             bitmap.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-            bitmap.bmiHeader.biWidth = 1280;
-            bitmap.bmiHeader.biHeight = -720;
+            bitmap.bmiHeader.biWidth = static_cast<LONG>(frame->width);
+            bitmap.bmiHeader.biHeight = -static_cast<LONG>(frame->height);
             bitmap.bmiHeader.biPlanes = 1;
             bitmap.bmiHeader.biBitCount = 32;
             bitmap.bmiHeader.biCompression = BI_RGB;
-            StretchDIBits(dc, 0, 0, client.right, client.bottom, 0, 0, 1280,
-                          720, frame->bgra.data(), &bitmap, DIB_RGB_COLORS,
-                          SRCCOPY);
+            StretchDIBits(dc, 0, 0, client.right, client.bottom, 0, 0,
+                          static_cast<int>(frame->width),
+                          static_cast<int>(frame->height), frame->bgra.data(),
+                          &bitmap, DIB_RGB_COLORS, SRCCOPY);
         } else {
             FillRect(dc, &client,
                      static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
             SetBkMode(dc, TRANSPARENT);
             SetTextColor(dc, RGB(255, 255, 255));
-            const wchar_t waiting[] =
-                L"Waiting for 127.0.0.1:5000 H.264 stream...";
-            TextOut(dc, 24, 24, waiting,
-                    static_cast<int>(sizeof(waiting) / sizeof(wchar_t) - 1));
+            const std::string listenAddress =
+                state != nullptr ? state->listenIpv4 : "127.0.0.1";
+            const std::wstring waiting =
+                L"Waiting on " +
+                std::wstring(listenAddress.begin(), listenAddress.end()) +
+                L":5000 for H.264 stream...";
+            TextOut(dc, 24, 24, waiting.c_str(),
+                    static_cast<int>(waiting.size()));
         }
         EndPaint(window, &paint);
         if (state != nullptr && frame &&
@@ -194,49 +208,63 @@ LRESULT CALLBACK ViewerWindowProc(HWND window, UINT message, WPARAM wParam,
                        oneSecondTicks) {
                 state->recentPaintQpc.pop_front();
             }
-            if (frame->senderQueuedQpc != 0 &&
-                frame->senderQueuedQpc <= frame->receivedQpc &&
+            if (frame->receivedQpc != 0 &&
                 frame->receivedQpc <= frame->decodedQpc &&
                 frame->decodedQpc <= paintedQpc) {
                 const double ticks = state->qpcTicksPerMillisecond;
-                const LatencySample sample{
-                    (frame->receivedQpc - frame->senderQueuedQpc) / ticks,
-                    (frame->decodedQpc - frame->receivedQpc) / ticks,
-                    (paintedQpc - frame->decodedQpc) / ticks,
-                    (paintedQpc - frame->senderQueuedQpc) / ticks};
-                state->recentLatencySamples.push_back(sample);
-                if (state->recentLatencySamples.size() >
+                state->recentReceiveToPaintMilliseconds.push_back(
+                    (paintedQpc - frame->receivedQpc) / ticks);
+                if (state->recentReceiveToPaintMilliseconds.size() >
                     kMaxLatencySamples) {
-                    state->recentLatencySamples.pop_front();
+                    state->recentReceiveToPaintMilliseconds.pop_front();
                 }
-                if (frame->sourceEventQpc >
-                        state->lastTimedSourceEventQpc &&
-                    frame->sourceEventQpc <= frame->captureReadyQpc &&
-                    frame->captureReadyQpc <= frame->senderQueuedQpc) {
-                    state->lastTimedSourceEventQpc = frame->sourceEventQpc;
-                    state->recentSourceLatencySamples.push_back({
-                        (frame->captureReadyQpc - frame->sourceEventQpc) /
-                            ticks,
-                        (frame->senderQueuedQpc - frame->captureReadyQpc) /
-                            ticks,
-                        (paintedQpc - frame->sourceEventQpc) / ticks});
-                    if (state->recentSourceLatencySamples.size() >
+                if (state->sameHostTiming && frame->senderQueuedQpc != 0 &&
+                    frame->senderQueuedQpc <= frame->receivedQpc) {
+                    const LatencySample sample{
+                        (frame->receivedQpc - frame->senderQueuedQpc) / ticks,
+                        (frame->decodedQpc - frame->receivedQpc) / ticks,
+                        (paintedQpc - frame->decodedQpc) / ticks,
+                        (paintedQpc - frame->senderQueuedQpc) / ticks};
+                    state->recentLatencySamples.push_back(sample);
+                    if (state->recentLatencySamples.size() >
                         kMaxLatencySamples) {
-                        state->recentSourceLatencySamples.pop_front();
+                        state->recentLatencySamples.pop_front();
+                    }
+                    if (frame->sourceEventQpc >
+                            state->lastTimedSourceEventQpc &&
+                        frame->sourceEventQpc <= frame->captureReadyQpc &&
+                        frame->captureReadyQpc <= frame->senderQueuedQpc) {
+                        state->lastTimedSourceEventQpc = frame->sourceEventQpc;
+                        state->recentSourceLatencySamples.push_back({
+                            (frame->captureReadyQpc - frame->sourceEventQpc) /
+                                ticks,
+                            (frame->senderQueuedQpc - frame->captureReadyQpc) /
+                                ticks,
+                            (paintedQpc - frame->sourceEventQpc) / ticks});
+                        if (state->recentSourceLatencySamples.size() >
+                            kMaxLatencySamples) {
+                            state->recentSourceLatencySamples.pop_front();
+                        }
                     }
                 }
                 if (state->paintedFrames % 30 == 0) {
                     std::vector<double> recentTotals;
                     recentTotals.reserve(60);
-                    for (auto it = state->recentLatencySamples.rbegin();
-                         it != state->recentLatencySamples.rend() &&
-                         recentTotals.size() < 60;
-                         ++it) {
-                        recentTotals.push_back(it->totalMilliseconds);
+                    if (state->sameHostTiming) {
+                        for (auto it = state->recentLatencySamples.rbegin();
+                             it != state->recentLatencySamples.rend() &&
+                             recentTotals.size() < 60; ++it) {
+                            recentTotals.push_back(it->totalMilliseconds);
+                        }
+                    } else {
+                        for (auto it =
+                                 state->recentReceiveToPaintMilliseconds.rbegin();
+                             it != state->recentReceiveToPaintMilliseconds.rend() &&
+                             recentTotals.size() < 60; ++it) {
+                            recentTotals.push_back(*it);
+                        }
                     }
                     std::sort(recentTotals.begin(), recentTotals.end());
-                    const std::size_t p95Index =
-                        (95 * recentTotals.size() + 99) / 100 - 1;
                     const auto& paintTimes = state->recentPaintQpc;
                     const double paintSeconds =
                         (paintTimes.back() - paintTimes.front()) /
@@ -246,15 +274,21 @@ LRESULT CALLBACK ViewerWindowProc(HWND window, UINT message, WPARAM wParam,
                             ? (paintTimes.size() - 1) / paintSeconds
                             : 0.0;
                     std::wostringstream title;
-                    title << L"RemoteDesk Receiver | paint " << std::fixed
+                    title << L"RemoteDesk Receiver " << frame->width << L"x"
+                          << frame->height << L" | paint " << std::fixed
                           << std::setprecision(1) << recentPaintFps
                           << L" FPS | skipped " << state->skippedPaintFrames
                           << L" | worst gap "
                           << static_cast<int>(state->maxPaintGapMilliseconds)
-                          << L" ms"
-                          << L" | packet p95 "
-                          << static_cast<int>(recentTotals[p95Index])
                           << L" ms";
+                    if (!recentTotals.empty()) {
+                        const std::size_t p95Index =
+                            (95 * recentTotals.size() + 99) / 100 - 1;
+                        title << (state->sameHostTiming
+                                      ? L" | packet p95 " : L" | recv p95 ")
+                              << static_cast<int>(recentTotals[p95Index])
+                              << L" ms";
+                    }
                     if (!state->recentSourceLatencySamples.empty()) {
                         std::vector<double> recentSourceTotals;
                         recentSourceTotals.reserve(60);
@@ -283,6 +317,61 @@ LRESULT CALLBACK ViewerWindowProc(HWND window, UINT message, WPARAM wParam,
         return 0;
     }
     case kFrameReady:
+        if (state != nullptr) {
+            std::shared_ptr<const FrameSnapshot> frame;
+            {
+                std::lock_guard lock(state->mutex);
+                frame = state->latestFrame;
+            }
+            if (frame &&
+                (frame->width != state->windowStreamWidth ||
+                 frame->height != state->windowStreamHeight)) {
+                const DWORD style = static_cast<DWORD>(
+                    GetWindowLongPtr(window, GWL_STYLE));
+                RECT nativeSize{0, 0, static_cast<LONG>(frame->width),
+                                static_cast<LONG>(frame->height)};
+                AdjustWindowRect(&nativeSize, style, FALSE);
+                const int frameWidth =
+                    nativeSize.right - nativeSize.left -
+                    static_cast<int>(frame->width);
+                const int frameHeight =
+                    nativeSize.bottom - nativeSize.top -
+                    static_cast<int>(frame->height);
+                unsigned displayWidth = frame->width;
+                unsigned displayHeight = frame->height;
+                MONITORINFO monitorInfo{};
+                monitorInfo.cbSize = sizeof(monitorInfo);
+                if (GetMonitorInfo(MonitorFromWindow(
+                                       window, MONITOR_DEFAULTTONEAREST),
+                                   &monitorInfo)) {
+                    const int workWidth = monitorInfo.rcWork.right -
+                                          monitorInfo.rcWork.left;
+                    const int workHeight = monitorInfo.rcWork.bottom -
+                                           monitorInfo.rcWork.top;
+                    const double scale = std::min(
+                        {1.0,
+                         static_cast<double>(workWidth - frameWidth) /
+                             frame->width,
+                         static_cast<double>(workHeight - frameHeight) /
+                             frame->height});
+                    if (scale > 0.0 && scale < 1.0) {
+                        displayWidth = std::max(
+                            1u, static_cast<unsigned>(frame->width * scale));
+                        displayHeight = std::max(
+                            1u, static_cast<unsigned>(frame->height * scale));
+                    }
+                }
+                RECT displaySize{0, 0, static_cast<LONG>(displayWidth),
+                                 static_cast<LONG>(displayHeight)};
+                AdjustWindowRect(&displaySize, style, FALSE);
+                SetWindowPos(window, nullptr, 0, 0,
+                             displaySize.right - displaySize.left,
+                             displaySize.bottom - displaySize.top,
+                             SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+                state->windowStreamWidth = frame->width;
+                state->windowStreamHeight = frame->height;
+            }
+        }
         InvalidateRect(window, nullptr, FALSE);
         return 0;
     case kStreamDone:
@@ -345,13 +434,17 @@ void ReceiveAndDecode(ViewerState& state) {
         std::uint64_t nextFrameSerial = 0;
         bool decoderStarted = false;
         unsigned streamFramesPerSecond = 0;
+        unsigned streamWidth = 0;
+        unsigned streamHeight = 0;
         std::uint64_t firstReceivedQpc = 0;
         std::uint64_t lastReceivedQpc = 0;
         auto onFrame = [&state, &timingBySample, &nextFrameSerial](
-                          std::vector<std::uint8_t>&& bgra, unsigned,
-                          unsigned, std::uint64_t sampleTime) {
+                          std::vector<std::uint8_t>&& bgra, unsigned width,
+                          unsigned height, std::uint64_t sampleTime) {
                           auto frame = std::make_shared<FrameSnapshot>();
                           frame->bgra = std::move(bgra);
+                          frame->width = width;
+                          frame->height = height;
                           frame->serial = ++nextFrameSerial;
                           const auto timing = timingBySample.find(sampleTime);
                           if (timing != timingBySample.end()) {
@@ -374,18 +467,23 @@ void ReceiveAndDecode(ViewerState& state) {
                           PostMessage(state.window, kFrameReady, 0, 0);
                       };
 
-        const auto packets = remotedesk::ReceiveLoopbackPackets(
-            5000,
+        const auto packets = remotedesk::ReceivePackets(
+            state.listenIpv4, 5000,
             [&decoder, &timingBySample, &decoderStarted,
-             &streamFramesPerSecond, &firstReceivedQpc, &lastReceivedQpc,
-             &onFrame](
+             &streamFramesPerSecond, &streamWidth, &streamHeight,
+             &firstReceivedQpc, &lastReceivedQpc, &onFrame](
                 const remotedesk::EncodedNetworkPacket& packet) {
                 if (!decoderStarted) {
-                    decoder.Start(1280, 720, packet.framesPerSecond, onFrame);
+                    decoder.Start(packet.width, packet.height,
+                                  packet.framesPerSecond, onFrame);
                     decoderStarted = true;
                     streamFramesPerSecond = packet.framesPerSecond;
-                } else if (packet.framesPerSecond != streamFramesPerSecond) {
-                    throw std::runtime_error("Stream frame rate changed");
+                    streamWidth = packet.width;
+                    streamHeight = packet.height;
+                } else if (packet.framesPerSecond != streamFramesPerSecond ||
+                           packet.width != streamWidth ||
+                           packet.height != streamHeight) {
+                    throw std::runtime_error("Stream video format changed");
                 }
                 if (firstReceivedQpc == 0) {
                     firstReceivedQpc = packet.receivedQpc;
@@ -425,12 +523,14 @@ void ReceiveAndDecode(ViewerState& state) {
                 : 0.0;
         log << "received=" << packets.packets << ", bytes=" << packets.bytes
             << ", checksum=" << packets.checksum
+            << ", listen=" << state.listenIpv4
             << ", decoded=" << decoding.decodedFrames
             << ", image=yes, decode_avg_ms="
             << decoding.averageDecodeMilliseconds
             << ", low_latency="
             << (decoding.lowLatencyEnabled ? "yes" : "no")
             << ", timing_matches=" << state.timingMatches
+            << ", resolution=" << streamWidth << "x" << streamHeight
             << ", fps_declared=" << streamFramesPerSecond
             << ", recv_fps=" << std::fixed << std::setprecision(2)
             << receivedFramesPerSecond << '\n';
@@ -440,6 +540,7 @@ void ReceiveAndDecode(ViewerState& state) {
                   << ", low_latency="
                   << (decoding.lowLatencyEnabled ? "yes" : "no")
                   << ", timing_matches=" << state.timingMatches
+                  << ", resolution=" << streamWidth << "x" << streamHeight
                   << ", fps_declared=" << streamFramesPerSecond
                   << ", recv_fps=" << std::fixed << std::setprecision(2)
                   << receivedFramesPerSecond << ", image=yes\n";
@@ -453,6 +554,8 @@ void ReceiveAndDecode(ViewerState& state) {
         if (!state.stopRequested.load()) {
             std::lock_guard lock(state.mutex);
             state.error = error.what();
+            std::ofstream log("receiver.log", std::ios::trunc);
+            log << "error=" << error.what() << '\n';
             std::cerr << "receiver error: " << error.what() << '\n';
         }
     }
@@ -471,8 +574,7 @@ HWND CreateViewerWindow(HINSTANCE instance, ViewerState& state) {
     }
 
     RECT rectangle{0, 0, 1280, 720};
-    constexpr DWORD style =
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+    constexpr DWORD style = WS_OVERLAPPEDWINDOW;
     AdjustWindowRect(&rectangle, style, FALSE);
     HWND window = CreateWindowEx(
         0, kViewerClass, L"RemoteDesk Receiver | waiting", style,
@@ -487,16 +589,35 @@ HWND CreateViewerWindow(HINSTANCE instance, ViewerState& state) {
 } // namespace
 
 int main(int argc, char* argv[]) {
-    const bool autoClose = argc == 2 && std::string(argv[1]) == "--test";
-    const bool cancelTest =
-        argc == 2 && std::string(argv[1]) == "--cancel-test";
-    if (argc > 1 && !autoClose && !cancelTest) {
-        std::cerr << "Usage: remote_desk_receiver.exe [--test|--cancel-test]\n";
+    bool autoClose = false;
+    bool cancelTest = false;
+    bool listenSpecified = false;
+    std::string listenIpv4 = "127.0.0.1";
+    for (int index = 1; index < argc; ++index) {
+        const std::string argument(argv[index]);
+        if (argument == "--test" && !autoClose) {
+            autoClose = true;
+        } else if (argument == "--cancel-test" && !cancelTest) {
+            cancelTest = true;
+        } else if (argument.starts_with("--listen=") && !listenSpecified) {
+            listenIpv4 = argument.substr(sizeof("--listen=") - 1);
+            listenSpecified = true;
+        } else {
+            std::cerr << "Usage: remote_desk_receiver.exe "
+                         "[--test|--cancel-test] [--listen=private-IPv4]\n";
+            return 2;
+        }
+    }
+    if (autoClose && cancelTest) {
+        std::cerr << "Choose only one receiver test mode\n";
         return 2;
     }
     try {
+        remotedesk::ValidatePrivateIpv4Address(listenIpv4);
         ViewerState state;
         state.autoCloseOnDone = autoClose;
+        state.listenIpv4 = listenIpv4;
+        state.sameHostTiming = listenIpv4.starts_with("127.");
         LARGE_INTEGER frequency{};
         if (!QueryPerformanceFrequency(&frequency) ||
             frequency.QuadPart <= 0) {
@@ -544,6 +665,20 @@ int main(int argc, char* argv[]) {
                 << ", paint_max_gap_ms=" << std::fixed
                 << std::setprecision(2) << state.maxPaintGapMilliseconds
                 << ", timed=" << timed;
+            std::vector<double> receiveToPaint(
+                state.recentReceiveToPaintMilliseconds.begin(),
+                state.recentReceiveToPaintMilliseconds.end());
+            if (!receiveToPaint.empty()) {
+                std::sort(receiveToPaint.begin(), receiveToPaint.end());
+                const std::size_t p95Index =
+                    (95 * receiveToPaint.size() + 99) / 100 - 1;
+                const double sum = std::accumulate(
+                    receiveToPaint.begin(), receiveToPaint.end(), 0.0);
+                log << ", recv_to_paint_avg_ms="
+                    << sum / receiveToPaint.size()
+                    << ", recv_to_paint_p95_ms="
+                    << receiveToPaint[p95Index];
+            }
             if (timed != 0) {
                 std::vector<double> sorted;
                 std::vector<double> networkSorted;

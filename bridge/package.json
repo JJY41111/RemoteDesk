@@ -1,0 +1,24 @@
+{
+  "name": "remotedesk-ipad-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "setup": "node setup.mjs",
+    "preflight": "node preflight.mjs",
+    "start": "node server.mjs",
+    "test": "node --test test/*.test.mjs",
+    "test:browser": "node test/browser.mjs",
+    "test:ui": "node test/ui.mjs",
+    "test:latency": "node test/latency-browser.mjs",
+    "test:audio": "node test/audio.mjs"
+  },
+  "dependencies": {
+    "node-datachannel": "0.33.4",
+    "opusscript": "0.1.1",
+    "selfsigned": "5.5.0",
+    "ws": "8.21.3"
+  },
+  "devDependencies": { "playwright": "1.63.0" }
+}

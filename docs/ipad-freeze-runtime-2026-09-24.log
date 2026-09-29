@@ -1,0 +1,16 @@
+RemoteDesk runtime started
+window: created
+initialize: start
+initialize: DXGI factory created
+initialize: adapter selected
+initialize: output selected: adapter=0, output=0
+initialize: D3D11 device created
+initialize: desktop duplication created
+initialize: swap chain created
+initialize: complete
+window: shown
+capture: first pointer composed
+capture: first frame presented
+network live: connected to 127.0.0.1:5000 at 1920x1080@60
+network live: receiver disconnected: TCP sender queue is full or stopped
+network live: stopped after disconnect: send failed (WSA 10060)

@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>RemoteDesk 接收端</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header>
+    <h1>RemoteDesk</h1>
+    <span id="status">尚未連線</span>
+  </header>
+  <main>
+    <section id="pairing">
+      <label for="code">電腦終端顯示的 8 位配對碼</label>
+      <div class="row">
+        <input id="code" inputmode="numeric" autocomplete="one-time-code" maxlength="8" pattern="[0-9]{8}" placeholder="輸入配對碼">
+        <button id="connect">連線</button>
+      </div>
+      <p>第一次開啟時，Safari 可能會要求確認這台電腦的本機 HTTPS 憑證。</p>
+      <label for="syncMode">播放方式</label>
+      <select id="syncMode">
+        <option value="interactive">即時操作：畫面優先，避免等待延遲的聲音</option>
+        <option value="av-sync">影片觀賞：優先影音同步，可能增加操作延遲</option>
+      </select>
+      <label for="videoMode">畫面清晰度</label>
+      <select id="videoMode">
+        <option value="1080p">1080p：遊戲優先</option>
+        <option value="native">原生 2560×1440：文字清晰，負載較高</option>
+      </select>
+    </section>
+    <section id="session" hidden>
+      <div id="screenViewport"><video id="screen" autoplay playsinline muted tabindex="0"></video></div>
+      <audio id="sound" playsinline></audio>
+      <div class="toolbar">
+        <button id="play">播放畫面</button>
+        <button id="zoomScreen" aria-pressed="false">放大文字 150%</button>
+        <button id="panScreen" aria-pressed="false" hidden>移動畫面</button>
+        <button id="playAudio" disabled>播放聲音</button>
+        <label><input type="checkbox" id="control"> 啟用本次遠端操作</label>
+        <button id="keyboard">開啟觸控鍵盤</button>
+        <button id="focusKeys">鍵盤控制</button>
+        <button id="remoteRefresh">遠端 F5</button>
+        <button id="toggleGamepad" aria-pressed="false">啟用虛擬手把</button>
+        <label><input type="checkbox" id="lowLatency" disabled> 縮短主機音訊排隊（進階）</label>
+        <button id="remoteWin">遠端 Win</button>
+        <button id="exportMetrics">下載測試紀錄</button>
+        <button id="disconnect">斷線</button>
+      </div>
+      <textarea id="typing" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="在這裡輸入文字，再傳給遠端電腦"></textarea>
+      <textarea id="keyCapture" inputmode="none" autocomplete="off" autocapitalize="off"
+        autocorrect="off" spellcheck="false" aria-label="遠端實體鍵盤輸入區"
+        placeholder="遠端實體鍵盤：點這裡，再按 iPad 外接鍵盤。此區會顯示 Safari 是否收到按鍵。"></textarea>
+      <div id="inputStatus" role="status">鍵盤操作：按「鍵盤控制」會啟用本次遠端操作，再按 iPad 實體鍵盤。</div>
+      <p>按「遠端 Win」可開啟 Windows 開始功能表。</p>
+      <div id="inputMetrics">鍵盤診斷：等待連線</div>
+      <div id="gamepadStatus" role="status">iPad 手把：等待瀏覽器偵測。</div>
+      <div id="gamepadHostStatus" role="status">Windows 手把：等待主機連線。</div>
+      <div id="latencyStatus" role="status">主機音訊排隊：一般（120 ms）。</div>
+      <div id="syncStatus" role="status"></div>
+      <div id="displayStatus" role="status">等待畫面解析度</div>
+      <div id="metrics">等待畫面</div>
+      <div id="videoStatus" role="status"></div>
+      <div id="audioStatus" role="status">音訊尚未連線</div>
+      <p>觸控可當滑鼠。鍵盤玩遊戲請按「鍵盤控制」，再用遊戲內的鍵位設定。
+      手把走獨立路徑，傳送按鈕、搖桿與扳機狀態；按「啟用虛擬手把」後由主機建立虛擬 Xbox 手把。</p>
+    </section>
+  </main>
+</body>
+</html>

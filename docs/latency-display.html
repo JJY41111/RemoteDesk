@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RemoteDesk 畫面延遲對照</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+    body { margin: 0; background: #101010; color: white; text-align: center; }
+    h1 { font-size: clamp(28px, 4vw, 48px); margin: 24px 0 4px; }
+    #clock { font: bold clamp(48px, 9vw, 160px)/1.1 ui-monospace, Consolas, monospace;
+      font-variant-numeric: tabular-nums; letter-spacing: -.05em; padding: 28px 8px; }
+    #flash { height: 20vh; min-height: 80px; background: white; }
+    p { max-width: 900px; margin: 20px auto; padding: 0 16px; font-size: clamp(18px, 2vw, 26px); }
+  </style>
+</head>
+<body>
+  <h1>RemoteDesk 畫面延遲對照</h1>
+  <div id="clock">00:00.000</div>
+  <div id="flash"></div>
+  <p>讓主機螢幕和 iPad 遠端畫面同時入鏡，拍一張照片。主機數字減去 iPad 數字，
+    約為畫面落後時間；多拍幾張比較。這不是手把按下到遊戲反應的完整延遲。</p>
+  <script>
+    const clock = document.getElementById('clock');
+    const flash = document.getElementById('flash');
+    const start = performance.now();
+    function paint(now) {
+      const elapsed = Math.max(0, Math.floor(now - start));
+      const minutes = Math.floor(elapsed / 60000);
+      const seconds = Math.floor(elapsed / 1000) % 60;
+      const milliseconds = elapsed % 1000;
+      clock.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(milliseconds).padStart(3, '0')}`;
+      flash.style.background = Math.floor(elapsed / 250) % 2 ? '#1877ff' : '#fff';
+      requestAnimationFrame(paint);
+    }
+    requestAnimationFrame(paint);
+  </script>
+</body>
+</html>

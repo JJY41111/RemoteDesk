@@ -76,9 +76,10 @@ std::uint8_t ClampByte(int value) {
 }
 
 std::vector<std::uint8_t> Nv12ToBgra(const BYTE* nv12, unsigned width,
-                                      unsigned height) {
+                                      unsigned height,
+                                      unsigned lumaPlaneHeight) {
     std::vector<std::uint8_t> bgra(static_cast<std::size_t>(width) * height * 4);
-    const BYTE* uv = nv12 + static_cast<std::size_t>(width) * height;
+    const BYTE* uv = nv12 + static_cast<std::size_t>(width) * lumaPlaneHeight;
     for (unsigned y = 0; y < height; ++y) {
         for (unsigned x = 0; x < width; ++x) {
             const int luminance = nv12[static_cast<std::size_t>(y) * width + x];
@@ -116,13 +117,18 @@ struct H264NetworkDecoder::Impl {
         Check(decoder->GetOutputStreamInfo(0, &streamInfo),
               "Get network decoder output info");
         const DWORD decodedBytes = width * height * 3 / 2;
+        // H.264's coded height is rounded up to a 16-pixel macroblock. A
+        // 1080-line picture can therefore occupy 1088 NV12 lines even though
+        // the transmitted picture is displayed at 1920x1080.
+        const unsigned codedHeight = (height + 15u) & ~15u;
+        const DWORD codedBytes = width * codedHeight * 3 / 2;
         for (;;) {
             ComPtr<IMFSample> callerSample;
             if ((streamInfo.dwFlags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES) == 0 &&
                 (streamInfo.dwFlags & MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES) ==
                     0) {
                 ComPtr<IMFMediaBuffer> buffer;
-                const DWORD size = std::max(streamInfo.cbSize, decodedBytes);
+                const DWORD size = std::max(streamInfo.cbSize, codedBytes);
                 const DWORD alignment = streamInfo.cbAlignment > 0
                                             ? streamInfo.cbAlignment - 1
                                             : 0;
@@ -147,8 +153,43 @@ struct H264NetworkDecoder::Impl {
                 break;
             }
             if (result == MF_E_TRANSFORM_STREAM_CHANGE) {
-                Check(decoder->SetOutputType(0, outputType.Get(), 0),
-                      "Restore NV12 decoder output type");
+                // The SPS can reveal a coded frame size different from the
+                // visible H.264 dimensions (for example 1088 vs 1080 lines).
+                // Re-select an offered NV12 type instead of forcing the old
+                // visible-size media type back onto the decoder.
+                bool selected = false;
+                for (DWORD index = 0;; ++index) {
+                    ComPtr<IMFMediaType> offered;
+                    const HRESULT available =
+                        decoder->GetOutputAvailableType(0, index, &offered);
+                    if (available == MF_E_NO_MORE_TYPES) {
+                        break;
+                    }
+                    Check(available, "Get updated decoder output type");
+                    GUID subtype{};
+                    UINT32 offeredWidth = 0;
+                    UINT32 offeredHeight = 0;
+                    if (FAILED(offered->GetGUID(MF_MT_SUBTYPE, &subtype)) ||
+                        FAILED(MFGetAttributeSize(offered.Get(),
+                                                  MF_MT_FRAME_SIZE,
+                                                  &offeredWidth,
+                                                  &offeredHeight)) ||
+                        subtype != MFVideoFormat_NV12 ||
+                        offeredWidth != width ||
+                        offeredHeight < height ||
+                        offeredHeight > ((height + 15u) & ~15u)) {
+                        continue;
+                    }
+                    if (SUCCEEDED(decoder->SetOutputType(0, offered.Get(), 0))) {
+                        outputType = offered;
+                        selected = true;
+                        break;
+                    }
+                }
+                if (!selected) {
+                    throw std::runtime_error(
+                        "Decoder offered no compatible NV12 output type");
+                }
                 Check(decoder->GetOutputStreamInfo(0, &streamInfo),
                       "Refresh decoder output info");
                 continue;
@@ -178,7 +219,9 @@ struct H264NetworkDecoder::Impl {
             const bool containsImage = std::any_of(
                 data, data + width * height,
                 [](BYTE value) { return value > 16; });
-            auto bgra = Nv12ToBgra(data, width, height);
+            const unsigned lumaPlaneHeight =
+                length >= codedBytes ? codedHeight : height;
+            auto bgra = Nv12ToBgra(data, width, height, lumaPlaneHeight);
             contiguous->Unlock();
             statistics.decodedFrameContainsImage |= containsImage;
             ++statistics.decodedFrames;
@@ -194,9 +237,11 @@ H264NetworkDecoder::H264NetworkDecoder() = default;
 
 H264NetworkDecoder::~H264NetworkDecoder() {
     if (impl_) {
-        try {
-            Stop();
-        } catch (...) {
+        // An exception can unwind the caller's callback captures before this
+        // object is destroyed. Draining here would invoke that stale callback.
+        impl_->decoder.Reset();
+        if (impl_->mediaFoundationStarted) {
+            MFShutdown();
         }
     }
 }

@@ -38,5 +38,19 @@ cl.exe /nologo /std:c++20 /O2 /EHsc /W4 /permissive- ^
 
 if errorlevel 1 exit /b %errorlevel%
 
+cl.exe /nologo /std:c++20 /O2 /EHsc /W4 /permissive- ^
+    /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /DNOMINMAX ^
+    /Fe:out\remote_desk_input.exe src\remote_input.cpp ^
+    /link user32.lib dxgi.lib
+
+if errorlevel 1 exit /b %errorlevel%
+
+cl.exe /nologo /std:c++20 /O2 /EHsc /W4 /permissive- ^
+    /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /DNOMINMAX ^
+    /Fe:out\remote_desk_audio.exe src\audio_loopback.cpp ^
+    /link ole32.lib mmdevapi.lib user32.lib
+
+if errorlevel 1 exit /b %errorlevel%
+
 echo.
-echo Build complete: out\remote_desk.exe and out\remote_desk_receiver.exe
+echo Build complete: capture, receiver, input, and audio helpers

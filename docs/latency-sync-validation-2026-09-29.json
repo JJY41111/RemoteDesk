@@ -1,0 +1,102 @@
+{
+  "at": "2026-09-28T23:28:42.984Z",
+  "analysis": {
+    "source": "C:/Users/johnl/Downloads/remotedesk-metrics-2026-09-28T17-04-46-423Z.csv",
+    "sourceSha256": "50c19d3b579d30e586bb28c9bf5760ea8a9b0edae2f9c49cafaf96b85beef2ac",
+    "samples": 36,
+    "firstEnabledAt": "2026-09-28T17:04:18.707Z",
+    "stallBeforeEnable": [
+      "2026-09-28T17:04:17.707Z"
+    ],
+    "peakVideoBufferMs": 401,
+    "peakAudioBufferMs": 603,
+    "peakHostAudioBufferMs": 0,
+    "audioPlayedSamples": 0,
+    "lastAudioLost": 71
+  },
+  "comparisons": [
+    {
+      "source": "bridge/test-results/sync-av-sync-playing-45s.json",
+      "scope": "Local Chrome synthetic H264; audio send delay injected before native transport. Not iPad or actual WiFi.",
+      "syncMode": "av-sync",
+      "playAudio": true,
+      "durationSeconds": 45,
+      "peakVideoBufferMs": 489,
+      "medianVideoBufferMs": 168,
+      "p95VideoBufferMs": 473,
+      "peakAudioBufferMs": 1195,
+      "minimumPresentedFramesPerSample": 59,
+      "lastSample": {
+        "second": 44,
+        "presentedFrames": 60,
+        "rttMs": 0,
+        "concealedSamples": 30182,
+        "audioBufferMs": 57,
+        "audioTargetMs": 40,
+        "audioMinimumMs": 40,
+        "videoBufferMs": 342,
+        "videoTargetMs": 350,
+        "videoMinimumMs": 20,
+        "videoLost": 0,
+        "videoBitrateKbps": 186,
+        "videoDecodeMs": 0,
+        "videoFps": "64.0"
+      }
+    },
+    {
+      "source": "bridge/test-results/sync-interactive-playing-45s.json",
+      "scope": "Local Chrome synthetic H264; audio send delay injected before native transport. Not iPad or actual WiFi.",
+      "syncMode": "interactive",
+      "playAudio": true,
+      "durationSeconds": 45,
+      "peakVideoBufferMs": 18,
+      "medianVideoBufferMs": 15,
+      "p95VideoBufferMs": 17,
+      "peakAudioBufferMs": 1188,
+      "minimumPresentedFramesPerSample": 62,
+      "lastSample": {
+        "second": 44,
+        "presentedFrames": 63,
+        "rttMs": 0,
+        "concealedSamples": 28834,
+        "audioBufferMs": 60,
+        "audioTargetMs": 40,
+        "audioMinimumMs": 40,
+        "videoBufferMs": 12,
+        "videoTargetMs": 20,
+        "videoMinimumMs": 20,
+        "videoLost": 0,
+        "videoBitrateKbps": 172,
+        "videoDecodeMs": 0,
+        "videoFps": "62.5"
+      }
+    }
+  ],
+  "sustained": {
+    "source": "bridge/test-results/sync-interactive-playing-300s.json",
+    "scope": "Local Chrome, 1920x1080 low-complexity synthetic H264 at approximately 60 fps; not real game/WiFi/iPad validation.",
+    "durationSeconds": 300,
+    "width": 1920,
+    "height": 1080,
+    "audioDelayMs": 600,
+    "audioDelayCycleSeconds": 40,
+    "peakVideoBufferMs": 13,
+    "medianVideoBufferMs": 8,
+    "p95VideoBufferMs": 12,
+    "peakAudioBufferMs": 1202,
+    "minimumPresentedFramesPerSample": 49,
+    "zeroPresentationSamples": 0,
+    "totalPresentedFrames": 18084,
+    "videoBitrateKbpsRange": [
+      353,
+      370
+    ]
+  },
+  "checks": {
+    "unitTests": "11 passed",
+    "ui": "passed",
+    "livePairingAndAudioPauseResume": "passed",
+    "csvSchema": "passed",
+    "ipadHardware": "not run"
+  }
+}
