@@ -1,23 +1,23 @@
 # RemoteDesk
 
-> 2026-09-29 更新：針對 iPad 遊戲 FPS 下滑與文字模糊，新增主機 GPU 轉色、效能數據及可選原生 2560×1440 畫質。主機本機測試通過，iPad 遊戲／字體實測仍待新版驗收。詳見 [`docs/performance-quality-2026-09-29.md`](docs/performance-quality-2026-09-29.md)。
+## 專案介紹
 
-> iPad／筆電瀏覽器接收、配對、遠端輸入與實驗音訊的啟動方式及驗證限制，
-> 請先看 [`docs/ipad-bridge-2026-09-18.md`](docs/ipad-bridge-2026-09-18.md)。
-> iPad Air 6 已能連線並進行日常瀏覽、鍵盤及滑鼠操作，但畫質、遊戲流暢度、
-> 工作列已能顯示、音訊已能播放；音訊斷續、畫質及遊戲流暢度仍在重測。
-> 目前不能宣稱已達穩定跨設備 60 FPS。
-> 2026-09-23 的 iPad Air 6（M2）操作與驗證清單見
-> [`docs/ipad-air6-validation-2026-09-23.md`](docs/ipad-air6-validation-2026-09-23.md)。
-> 原生 iPad App 實驗版及無 Mac 試開方式見 [`ipad/README.md`](ipad/README.md)。
+RemoteDesk 是開發中的 Windows 遠端桌面原型，目標是在同一個私人區網內，
+從 iPad 或筆電瀏覽器觀看並操作 Windows 電腦。Windows 主機以 C++、Direct3D 11
+和 DXGI Desktop Duplication 擷取畫面，再透過 Media Foundation 編碼為 H.264；
+Node.js 橋接程式提供 HTTPS 配對與 WebRTC 串流。
 
-Windows 低延遲遠端桌面原型。目前使用 C++、Direct3D 11 與 DXGI Desktop
-Duplication API 擷取主要螢幕，並能透過 Windows Media Foundation 將畫面編碼成
-H.264 MP4，或在記憶體中完成 H.264 編碼、排隊與解碼 Loopback。
-目前也能透過 TCP 將 H.264 畫面送到獨立接收視窗解碼顯示；預設只在
-同一台電腦上連線，可明確指定私人區網 IPv4 位址試跑跨設備接收。
+目前支援畫面、鍵盤與滑鼠回傳、系統音訊，以及可選的虛擬 Xbox 手把路徑。
+接收頁可選 1080p 遊戲優先或原生 2560×1440 文字優先模式，並下載逐秒統計
+CSV。專案另保留本機錄影、編解碼 Loopback 和獨立 Windows TCP 接收程式，
+供擷取與傳輸測試。原生 iPad App 仍是實驗版；虛擬延伸螢幕尚未完成。
 
-## 現階段功能
+此專案仍在調整遊戲延遲與文字清晰度。最新版本已通過 Windows 本機串流測試，
+但 iPad 上的遊戲流暢度與原生解析度畫質尚未驗收。使用方式見
+[`iPad／瀏覽器接收說明`](docs/ipad-bridge-2026-09-18.md)，實驗版 App 見
+[`ipad/README.md`](ipad/README.md)；主要測試報告連結列於本文後段。
+
+## Windows 擷取程式功能
 
 - 擷取主要顯示卡的第一個輸出螢幕
 - 在本機視窗即時預覽桌面
@@ -231,3 +231,15 @@ iPad Air 6 初次實測可連線，日常瀏覽與鍵鼠操作可用，但文字
 
 先依 [`docs/ipad-air6-validation-2026-09-23.md`](docs/ipad-air6-validation-2026-09-23.md)
 測試實機連線，再根據 CSV 與操作結果處理畫質、卡頓及輸入問題。
+
+## 測試結果與開發紀錄
+
+- [2026-09-29：iPad 遊戲 FPS、文字清晰度與 Windows 本機驗證](docs/performance-quality-2026-09-29.md)：已加入 GPU 轉色、主機效能紀錄與可選原生 2560×1440 畫面；新版 iPad 遊戲與文字效果仍待驗收。
+- [影音同步修正與驗證](docs/latency-sync-2026-09-29.md)：記錄不同播放策略的本機對照及 iPad 待測項目。
+- [iPad Air 6 操作與驗證清單](docs/ipad-air6-validation-2026-09-23.md)：區分已在實機確認的功能與尚待測試的功能。
+- [1080p60 畫質與 FPS 測試](docs/quality-1080p60-validation-2026-09-18.md)、[本機遊戲延遲基準](docs/game-latency-baseline-2026-09-17.md)：較早的 Windows 本機測試，不能當作 iPad 遊戲表現。
+
+iPad Air 6 已能連線，日常瀏覽、鍵鼠操作、工作列顯示和聲音播放均有實機回報；
+遊戲流暢度、偶發音訊雜訊與細字清晰度仍在調整。2026-09-29 的測試中，
+《漫威蜘蛛人 2》在 iPad 約 20–30 FPS，且 150% 檢視放大未解決字糊。
+因此目前不能宣稱已達穩定的跨設備 60 FPS 或完成畫質驗收。
