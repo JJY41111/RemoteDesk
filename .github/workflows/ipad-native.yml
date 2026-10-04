@@ -1,0 +1,49 @@
+name: Build iPad App
+on:
+  push:
+    branches: [codex/ipad-native-app]
+    paths: ['ipad/RemoteDesk-iOS/**', '.github/workflows/ipad-native.yml']
+  pull_request:
+    paths: ['ipad/RemoteDesk-iOS/**', '.github/workflows/ipad-native.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build unsigned device App
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          xcodebuild -version | tee artifacts/xcode-version.txt
+          xcodebuild -project ipad/RemoteDesk-iOS/RemoteDesk.xcodeproj -scheme RemoteDesk -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build/device CODE_SIGNING_ALLOWED=NO build > artifacts/device-build.log 2>&1 || { tail -120 artifacts/device-build.log; exit 1; }
+          mkdir -p build/package/Payload
+          cp -R build/device/Build/Products/Release-iphoneos/RemoteDesk.app build/package/Payload/
+          test -x build/package/Payload/RemoteDesk.app/RemoteDesk
+          plutil -lint build/package/Payload/RemoteDesk.app/Info.plist
+          (cd build/package && ditto -c -k --keepParent Payload ../../artifacts/RemoteDesk-0.4.0-unsigned.ipa)
+          shasum -a 256 artifacts/*.ipa > artifacts/SHA256.txt
+      - name: Build and launch iPad simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -project ipad/RemoteDesk-iOS/RemoteDesk.xcodeproj -scheme RemoteDesk -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath build/simulator CODE_SIGNING_ALLOWED=NO build > artifacts/simulator-build.log 2>&1 || { tail -120 artifacts/simulator-build.log; exit 1; }
+          DEVICE=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(x["udid"] for group in d["devices"].values() for x in group if "iPad" in x["name"]))')
+          xcrun simctl boot "$DEVICE"
+          xcrun simctl bootstatus "$DEVICE" -b
+          xcrun simctl install "$DEVICE" build/simulator/Build/Products/Debug-iphonesimulator/RemoteDesk.app
+          xcrun simctl launch "$DEVICE" tw.johnl.remotedesk.native | tee artifacts/simulator-launch.txt
+          sleep 5
+          xcrun simctl spawn "$DEVICE" launchctl list | grep tw.johnl.remotedesk.native | tee artifacts/simulator-process.txt
+          xcrun simctl io "$DEVICE" screenshot artifacts/simulator-launch.png
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: RemoteDesk-unsigned-ipa
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 14
