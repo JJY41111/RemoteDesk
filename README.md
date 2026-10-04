@@ -34,7 +34,7 @@ Windows 使用 Ctrl+V；也可上傳文件、程式碼、壓縮檔、照片與�
 - **跨區遊戲修正**：手把最新狀態短時間補送、停畫時主動要求恢復影格，並輸出通道往返與前後端版本。游標邊界仍限制 iPad 網頁的第一人稱滑鼠操作。
 - **接收緩衝**：偵測 `jitterBufferTarget` 支援，可選80／120／160 ms基準；不代表總延遲或保證值，原緩衝已低時不刻意增加。異常時嘗試還原瀏覽器預設。
 
-首次仍需 Windows C++ 建置、Node.js 套件與 HTTPS 憑證設定；跨網路需兩端 Tailscale，虛擬手把需另行設定 VIIPER／相容驅動。啟動器不自動安装驅動。
+首次仍需 Windows C++ 建置、Node.js 套件與 HTTPS 憑證設定；跨網路需兩端 Tailscale，虛擬手把需另行設定 VIIPER／相容驅動。啟動器不自動安裝驅動。
 
 操作指南：[`PC啟動器`](docs/pc-launcher-2026-10-04.md)、[`配對碼管理`](docs/launcher-pairing-password-2026-10-04.md)、[`加入主畫面`](ipad/README.md)。
 
