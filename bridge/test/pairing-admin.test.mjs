@@ -46,8 +46,8 @@ test('every code change requires password, custom code persists, LAN/WAN stay in
 });
 
 test('management rejects remote devices, browser origins and missing launcher header', async () => {
-  const admin = new PairingAdmin({ directory: tmpdir(), mode: 'lan', port: 19561, host: '192.168.0.95' });
-  for (const [remote, origin, launcher] of [['192.168.0.96', undefined, '1'], ['192.168.0.95', 'https://evil.test', '1'], ['192.168.0.95', undefined, undefined]]) {
+  const admin = new PairingAdmin({ directory: tmpdir(), mode: 'lan', port: 19561, host: '192.168.1.100' });
+  for (const [remote, origin, launcher] of [['192.168.1.101', undefined, '1'], ['192.168.1.100', 'https://evil.test', '1'], ['192.168.1.100', undefined, undefined]]) {
     const req = Readable.from(['{}']); req.url = '/api/launcher/pairing/setup'; req.method = 'POST';
     req.socket = { remoteAddress: remote }; req.headers = { origin, 'x-remotedesk-launcher': launcher, 'content-type': 'application/json' };
     let status;

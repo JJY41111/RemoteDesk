@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { acceptedSignalOrigin } from '../signal-origin.mjs';
 
-const expected = 'https://192.168.0.95:8443';
+const expected = 'https://192.168.1.100:8443';
 test('browser origin and explicit native handshake are accepted', () => {
   assert.equal(acceptedSignalOrigin(expected, undefined, expected), true);
   assert.equal(acceptedSignalOrigin(undefined, 'ipad-native-v1', expected), true);

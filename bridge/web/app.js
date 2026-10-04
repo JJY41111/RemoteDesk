@@ -292,7 +292,7 @@ async function handleSignal(message) {
     transferToken = typeof message.transferToken === 'string' ? message.transferToken : null;
     $('clipboardStatus').textContent = transferToken ? '可傳送文字或圖片。' : '主機未提供剪貼簿功能。';
     $('uploadStatus').textContent = transferToken ?
-      '儲存至 C:\\Users\\johnl\\Desktop\\ipad傳輸' : '主機未提供檔案傳輸功能。';
+      '儲存至主機的「ipad傳輸」資料夾' : '主機未提供檔案傳輸功能。';
     // Each server session starts with remote input disabled. Never carry an
     // old session's opt-in or acknowledgement into a fresh pairing.
     controlReady = false;
@@ -768,7 +768,7 @@ $('sendFiles').onclick = async () => {
   try {
     for (const [index, file] of files.entries()) {
       const result = await uploadOne(file, index + 1, files.length);
-      $('uploadStatus').textContent = `已接收 ${index + 1}/${files.length}：${result.name}（${result.bytes} 位元組）；存於 C:\\Users\\johnl\\Desktop\\ipad傳輸`;
+      $('uploadStatus').textContent = `已接收 ${index + 1}/${files.length}：${result.name}（${result.bytes} 位元組）；存於主機的「ipad傳輸」資料夾`;
     }
     $('uploadFiles').value = '';
   } catch (error) { $('uploadStatus').textContent = `傳輸失敗：${error.message}`; }

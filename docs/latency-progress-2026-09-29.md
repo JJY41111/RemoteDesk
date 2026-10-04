@@ -68,7 +68,7 @@
 - docs/latency-sync-2026-09-29.md：目前使用方式與限制。
 - docs/latency-sync-validation-2026-09-29.json：永久摘要、原iPad CSV雜湊與對照。
 - bridge/test-results/sync-*-playing-45s.json、sync-interactive-playing-300s.json：本機逐秒原始測試。
-- 原CSV C:/Users/johnl/Downloads/remotedesk-metrics-2026-09-28T17-04-46-423Z.csv：勾選前已停頓/丟包，audio_playing全0，audio buffer603ms/video401ms/主機queue0，不能歸因主機queue開關。
+- 原CSV C:/Users/ExampleUser/Downloads/remotedesk-metrics-2026-09-28T17-04-46-423Z.csv：勾選前已停頓/丟包，audio_playing全0，audio buffer603ms/video401ms/主機queue0，不能歸因主機queue開關。
 
 ## 使用者下一步
 原主機視窗Ctrl+C，bridge目錄執行 .\start-ipad.cmd；iPad重新整理，選「即時操作」，用新配對碼。

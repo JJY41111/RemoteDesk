@@ -2,12 +2,14 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { readFile, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 
 const port = 8549;
 const name = `remotedesk-upload-check-${process.pid}.cpp`;
-const destination = join('C:\\Users\\johnl\\Desktop\\ipad傳輸', name);
+const project = fileURLToPath(new URL('../..', import.meta.url));
+const destination = join(dirname(project), 'ipad傳輸', name);
 const server = spawn(process.execPath,
   ['server.mjs', '--host=127.0.0.1', `--port=${port}`, '--tcp-port=55449',
     '--no-launch'],

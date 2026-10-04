@@ -4,7 +4,7 @@
 
 使用者回報：剛連線時順暢；《快打旋風》比前版好；《漫威蜘蛛人 2》在 iPad 約 20–30 FPS，但主機遊戲畫面本身明顯高於 60 FPS 且順暢；網頁放大 150% 仍無法讓字清晰。
 
-來源：`C:\Users\johnl\Downloads\remotedesk-metrics-2026-09-29T12-23-38-465Z.csv`，SHA-256 `C0DBB2ADF2165351827F6736C0E9E8AB311E66C29EC448A33321F9`，約 8 分 21 秒、502 筆。
+來源：`C:\Users\ExampleUser\Downloads\remotedesk-metrics-2026-09-29T12-23-38-465Z.csv`，SHA-256 `C0DBB2ADF2165351827F6736C0E9E8AB311E66C29EC448A33321F9`，約 8 分 21 秒、502 筆。
 
 - 初段呈現與解碼接近 59–60 FPS。12:21:12Z 後開始下降；12:22:16–12:22:45Z 呈現中位數約 22 FPS；12:22:46–12:23:15Z 約 10 FPS。
 - 下降期間解碼 FPS 也同步下降；瀏覽器丟棄、視訊封包遺失及 bridge 丟棄累計仍為 0。單幀解碼約 5–6 ms。這些資料支持「到達接收端的影格數減少」，無法只憑 CSV 再區分主機擷取、轉色、編碼或其他主機負載。
@@ -35,7 +35,7 @@
 
 ## 下一次 iPad 驗收
 
-目前執行中的舊 bridge 尚未載入這版，請在原視窗按 Ctrl+C，然後在 `C:\Users\johnl\Desktop\RemoteDesk\bridge` 執行 `start-ipad.cmd`。既有配對碼會更新；Safari 請新開該服務頁面。
+目前執行中的舊 bridge 尚未載入這版，請在原視窗按 Ctrl+C，然後在 `C:\Users\ExampleUser\Desktop\RemoteDesk\bridge` 執行 `start-ipad.cmd`。既有配對碼會更新；Safari 請新開該服務頁面。
 
 1. 先選預設 `1080p：遊戲優先`，玩《漫威蜘蛛人 2》至少 3 分鐘。記錄頁面中的主機送出 FPS、接收端呈現 FPS、瀏覽器丟棄數並下載 CSV。
 2. 斷線重新配對，選 `原生 2560×1440：文字清晰`。用同一頁細字與主機畫面對照並截圖；也可短試遊戲，但如接收端 FPS 下降就回到 1080p。

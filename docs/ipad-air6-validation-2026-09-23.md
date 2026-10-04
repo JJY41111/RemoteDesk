@@ -17,11 +17,11 @@ WebRTC；舊的 `remote_desk_receiver.exe` 私人 IP TCP 模式仍未加密，iP
 cd bridge
 npm.cmd ci
 npm.cmd run preflight
-npm.cmd start -- --host=192.168.0.95 --enable-input --audio --display=0:0
+npm.cmd start -- --host=192.168.1.100 --enable-input --audio --display=0:0
 ```
 
 `preflight` 會列出本機私人 IPv4 及必要執行檔。此機在 2026-09-23 偵測到
-`192.168.0.95`（有線區網）。上面的啟動指令可直接複製；若日後地址變動，
+`192.168.1.100`（有線區網）。上面的啟動指令可直接複製；若日後地址變動，
 請複製 `preflight` 輸出的整行 `Example:` 指令，勿把說明文字或尖括號貼進
 PowerShell。iPad 與主機
 要處於可互通的可信任網路。服務只綁指定的 IP；不能用 Tailscale、Hamachi 或
@@ -84,7 +84,7 @@ Windows 能建立、移除虛擬顯示器及 1920×1080@60 模式；再評估該
   解碼及 CSV 匯出成功；短時段約 60 FPS，觀測最長間隔 24.3 ms、瀏覽器
   丟棄 2 幀，收到 62 個 Opus RTP 封包。沒有驗證音訊實際聽感或輸入事件
   是否到達 Windows 應用程式。
-- 橋接服務成功綁定當時的 `192.168.0.95`；從同一台主機用該 IP 讀取 HTTPS
+- 橋接服務成功綁定當時的 `192.168.1.100`；從同一台主機用該 IP 讀取 HTTPS
   頁面與公開 CA 憑證均回應 HTTP 200。這只確認本機網卡入口可用，**沒有**
   驗證其他設備、防火牆或 Wi-Fi 隔離設定。
 - 測試後未留下 `remote_desk.exe`、輸入或音訊輔助程序。

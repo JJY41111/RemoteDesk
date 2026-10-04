@@ -1,10 +1,10 @@
 # 跨地區從 iPad 連回 Windows 主機
 
-RemoteDesk 原本只接受主機區網 IPv4，例如 `192.168.0.95`；這個位址離開家中網路便無法直接使用。現在新增只綁定主機 **Tailscale 網卡**的跨區模式。iPad 和 Windows 必須登入同一個 tailnet 並保持 Tailscale 已連線。不需在家用路由器開放 8443、9443 或 WebRTC 埠到公網。
+RemoteDesk 原本只接受主機區網 IPv4，例如 `192.168.1.100`；這個位址離開家中網路便無法直接使用。現在新增只綁定主機 **Tailscale 網卡**的跨區模式。iPad 和 Windows 必須登入同一個 tailnet 並保持 Tailscale 已連線。不需在家用路由器開放 8443、9443 或 WebRTC 埠到公網。
 
 ## 啟動與連線
 
-在 Windows 主機的 `C:\Users\johnl\Desktop\RemoteDesk\bridge` 執行：
+在 Windows 主機的 `C:\Users\ExampleUser\Desktop\RemoteDesk\bridge` 執行：
 
 ```powershell
 npm.cmd run preflight
@@ -13,9 +13,9 @@ npm.cmd run start:tailnet
 
 `start:tailnet` 自動讀取目前主機 Tailscale IPv4，僅綁定該網卡的 HTTPS `9443` 與 CA 下載 `9442`；原始 H.264 TCP 僅在 `127.0.0.1:55445`。若 Tailscale 未連線會直接報錯，不會綁定公網位址。主機視窗會顯示本次 8 位配對碼；保持程序執行。
 
-本次主機位址為 `100.124.244.122`，iPad Safari 網址為 **https://100.124.244.122:9443/**。位址可能在裝置重新加入 tailnet 後改變，屆時以 `preflight` 輸出為準。iPad 若顯示憑證警告，先確認 RemoteDesk CA 已安裝並設為信任；不要忽略憑證錯誤。這次重新簽發的主機憑證同時涵蓋家中 IP 與 Tailscale IP，CA 指紋為 `B8:06:CD:EC:CB:A7:7B:AE:C0:9C:BA:1D:AC:2C:F8:1C:3D:8E:7E:FD:06:82:94:DB:0C:E6:58:4C:04:E2:81:70`。如需重新下載 CA，僅在同一 tailnet 使用 `http://100.124.244.122:9442/ca.crt`，安裝前核對主機所顯示指紋。
+本次主機位址為 `100.64.0.10`，iPad Safari 網址為 **https://100.64.0.10:9443/**。位址可能在裝置重新加入 tailnet 後改變，屆時以 `preflight` 輸出為準。iPad 若顯示憑證警告，先確認 RemoteDesk CA 已安裝並設為信任；不要忽略憑證錯誤。這次重新簽發的主機憑證同時涵蓋家中 IP 與 Tailscale IP，CA 指紋為 `（範例省略；請核對你自己主機的 CA 指紋）`。如需重新下載 CA，僅在同一 tailnet 使用 `http://100.64.0.10:9442/ca.crt`，安裝前核對主機所顯示指紋。
 
-Windows 目前另有區網模式監聽 `192.168.0.95:8443` 和 `127.0.0.1:5000`；跨區服務使用獨立埠，未停止原服務。若電腦睡眠、關機、Tailscale 斷線或本程序退出，iPad 便無法連線。目前尚未設定開機自動啟動。
+Windows 目前另有區網模式監聽 `192.168.1.100:8443` 和 `127.0.0.1:5000`；跨區服務使用獨立埠，未停止原服務。若電腦睡眠、關機、Tailscale 斷線或本程序退出，iPad 便無法連線。目前尚未設定開機自動啟動。
 
 ## 已驗證與限制
 
@@ -53,13 +53,13 @@ iPad 尺寸 UI、LAN/跨區輸入路由、17 項單元測試、隔離埠真實�
 
 可選 `mobile1080` 保持 1920×1080、60 FPS，編碼目標 5 Mbps；預設跨區 8 Mbps 與 LAN 設定保持原樣。05:22 CSV 中高 RTT（≥150 ms）時的平均接收視訊流量約 7.56 Mbps，低 RTT（<60 ms）時約 4.57 Mbps；這只是相關，不能證明網路飽和，因此不自動切換。Windows 完整建置、17 項單元及 iPad 尺寸 UI 測試通過；隔離埠真實 30 秒 mobile 模式送出 1910 幀、解碼 1957 幀、末秒呈現約 58.9 FPS、接收約 4.1 Mbps、遺失 0；同條件預設模式送出 1910、解碼 1958、末秒約 52 FPS、接收約 4.8 Mbps、遺失 0。兩段本機桌面與 Chrome 測試不能解讀為 mobile 模式在 iPad 優於預設；受主機場景及呈現波動影響，必須同場景跨區 A/B。
 
-跨區 9443 服務已在沒有進行中擷取工作階段時更新並重啟，主機配對碼因此更新；原區網 8443 持續監聽且未重啟。網址仍是 `https://100.124.244.122:9443/`；最新版需重新開啟或重載 Safari 網頁才能取得。最終輸入反應、聲音及畫面 FPS 仍待使用者實機驗收，不能把本機回歸當成跨區完成。
+跨區 9443 服務已在沒有進行中擷取工作階段時更新並重啟，主機配對碼因此更新；原區網 8443 持續監聽且未重啟。網址仍是 `https://100.64.0.10:9443/`；最新版需重新開啟或重載 Safari 網頁才能取得。最終輸入反應、聲音及畫面 FPS 仍待使用者實機驗收，不能把本機回歸當成跨區完成。
 
 ### 04:33:48Z iPad 實測與接收端排隊修正
 
 後續使用者回報選項「消失」且體感無改善。原因之一是上次將選項改名成「音訊排隊上限」，仍放在視訊下方可換行工具列；在 iPad 視窗裡不易找到。已改回固定可辨識的「縮短排隊延遲」名稱並放到遠端畫面上方，顯示接收端版本 `2026-10-01.2` 及瀏覽器是否真的能控制影音；若不支援，明示勾選不會改善畫面延遲。iPad 尺寸 UI 回歸確認選項位於畫面上方，運行中的 9443 網頁服務已回傳新版 HTML；使用者仍需重新載入既有 Safari 頁面。這只是可見性與誠實狀態修正，不宣稱已降低跨區延遲。
 
-本次診斷期間，Tailscale 路徑後來已變為**直連**（iPad 位址 `49.216.26.139:33947`），但連續十次往返仍介於 **27–237 ms**。因此「仍然慢」不能單純歸因於 DERP；直連本身的抖動與 Safari 接收／呈現也需處理。早先 83–307 ms DERP 探測是另一時刻的狀態，兩者不可混為同一次測試。使用者先前截圖顯示 iPad 連在 `iPhone.1` Wi-Fi，可能是手機熱點，但尚未取得此輪網路類型確認，不能直接認定行動網路是唯一原因。
+本次診斷期間，Tailscale 路徑後來已變為**直連**（iPad 位址 `203.0.113.10:40000`），但連續十次往返仍介於 **27–237 ms**。因此「仍然慢」不能單純歸因於 DERP；直連本身的抖動與 Safari 接收／呈現也需處理。早先 83–307 ms DERP 探測是另一時刻的狀態，兩者不可混為同一次測試。使用者先前截圖顯示 iPad 連在 `ExampleHotspot` Wi-Fi，可能是手機熱點，但尚未取得此輪網路類型確認，不能直接認定行動網路是唯一原因。
 
 這份 124 列紀錄中，主機送出平均約 59.6 FPS、iPad 解碼平均約 59.8 FPS，但實際呈現平均 55.2 FPS、最低 13 FPS。視訊接收緩衝平均約 134 ms、最高 281 ms；音訊接收緩衝平均約 525 ms、最高 926 ms。往返時間平均約 96 ms、最高 570 ms，視訊遺失計數最高 553。低延遲開關關閉 48 列、開啟 76 列；音訊在切換前已播放，接收緩衝在切換前已達約 229 ms。這些數據不支持「只調主機音訊排隊即可修復」的假設，也不能用未控制場景的前後段 FPS 直接判斷開關因果。
 
@@ -71,7 +71,7 @@ iPad 尺寸 UI、LAN/跨區輸入路由、17 項單元測試、隔離埠真實�
 
 瀏覽器在沒有啟用手把時，手把偵測改為每 100 ms；只有標準手把已啟用且正在遠端操作時才維持每 8 ms 取樣。這減少一般瀏覽時 Safari 主執行緒的無用喚醒，不降低正在使用的手把取樣頻率。本機 UI 與真實影音串流回歸通過；iPad 呈現卡頓是否因此改善仍待同場景測試。
 
-主機在本次診斷時對 `ipad148` 的 10 次 Tailscale ping 全經香港 DERP，中繼往返約 83–307 ms，未建立直連；主機 `tailscale netcheck` 顯示 UDP 可用、`MappingVariesByDestIP: true`、無自動 port mapping。這是**診斷當下**的路徑，CSV 沒有記錄 Tailscale 直連／中繼狀態，因此不能倒推 04:33 的整場都走中繼。Tailscale 官方指出 hard NAT 易導致中繼，直連通常延遲與吞吐較佳；下一次實機驗收應同時量測連線路徑。若持續 DERP，需處理家中路由器 NAT/UDP 41641 可達性或其他可用直連路徑，不能單靠 UI 排隊開關達到區網水準。尚未修改路由器或放行公網服務埠。
+主機在本次診斷時對 `example-ipad` 的 10 次 Tailscale ping 全經香港 DERP，中繼往返約 83–307 ms，未建立直連；主機 `tailscale netcheck` 顯示 UDP 可用、`MappingVariesByDestIP: true`、無自動 port mapping。這是**診斷當下**的路徑，CSV 沒有記錄 Tailscale 直連／中繼狀態，因此不能倒推 04:33 的整場都走中繼。Tailscale 官方指出 hard NAT 易導致中繼，直連通常延遲與吞吐較佳；下一次實機驗收應同時量測連線路徑。若持續 DERP，需處理家中路由器 NAT/UDP 41641 可達性或其他可用直連路徑，不能單靠 UI 排隊開關達到區網水準。尚未修改路由器或放行公網服務埠。
 
 API 與連線依據：[WebKit Safari 27 新功能](https://webkit.org/blog/18325/webkit-features-for-safari-27-0/)、[W3C WebRTC 接收緩衝目標](https://www.w3.org/TR/webrtc/)、[Tailscale 連線種類與直連條件](https://tailscale.com/docs/reference/connection-types)、[Tailscale hard NAT 診斷](https://tailscale.com/docs/reference/device-connectivity)。
 
@@ -129,10 +129,10 @@ API 與連線依據：[WebKit Safari 27 新功能](https://webkit.org/blog/18325
 
 尚待 iPad 同场景驗證黑畫面恢復、遊戲啟動及影音/操作連續性。遊戲啟動時本機來源偶爾關閉的原因尚未確定；若仍重現，需對照新 session log 與 CSV，不能把該問題當成已修復。
 
-- 主機 Tailscale 已連線，IP 為 `100.124.244.122`；主機能 ping 到線上的 iPad Tailscale 裝置 `ipad148`。起初三次經香港 DERP 中繼往返約 194–229 ms；iPad 開始串流後再測已建立直連，單次往返約 27 ms。連線路徑可能隨網路變化，這些數字不是按鍵到畫面的總延遲。
-- 使用者已在學校用 iPad Safari 打開 `https://100.124.244.122:9443/`，看到配對頁，配對後也看到家中桌面；**跨地區 HTTPS、WebRTC 畫面已獲 iPad 實機確認**。主機紀錄顯示遠端操作已啟用、音訊擷取已開始；鍵鼠實際反應和 iPad 聽到的聲音仍待使用者回報。
+- 主機 Tailscale 已連線，IP 為 `100.64.0.10`；主機能 ping 到線上的 iPad Tailscale 裝置 `example-ipad`。起初三次經香港 DERP 中繼往返約 194–229 ms；iPad 開始串流後再測已建立直連，單次往返約 27 ms。連線路徑可能隨網路變化，這些數字不是按鍵到畫面的總延遲。
+- 使用者已在學校用 iPad Safari 打開 `https://100.64.0.10:9443/`，看到配對頁，配對後也看到家中桌面；**跨地區 HTTPS、WebRTC 畫面已獲 iPad 實機確認**。主機紀錄顯示遠端操作已啟用、音訊擷取已開始；鍵鼠實際反應和 iPad 聽到的聲音仍待使用者回報。
 - Windows **同一台電腦**透過 Tailscale IP、隔離埠 8544/55444 完成 HTTPS 配對及真實 1080p60 WebRTC 畫面：bridge 約 60 FPS、丟棄 0、Chrome 解碼 879 幀、接收緩衝約 10 ms、視訊遺失 0。此測試不能代表跨地區網路品質。
-- 正式跨區服務已在主機 `100.124.244.122:9443` 回應 HTTP 200，並維持原 8443 區網服務。15 項 Node 單元測試通過。
+- 正式跨區服務已在主機 `100.64.0.10:9443` 回應 HTTP 200，並維持原 8443 區網服務。15 項 Node 單元測試通過。
 - 目前的 DERP 往返時間對快節奏遊戲不利。先確認跨區基本功能；之後可依 Tailscale 的連線診斷改善直連，不要把本機 Chrome FPS 當作 iPad 遊戲表現。
 
 跨區方案依據 Tailscale 官方的 [Windows 安裝](https://tailscale.com/docs/install/windows)、[iPad 安裝](https://tailscale.com/docs/install/ios)、[裝置位址](https://tailscale.com/docs/concepts/tailscale-ip-addresses)與[直連／中繼說明](https://tailscale.com/docs/reference/connection-types)。

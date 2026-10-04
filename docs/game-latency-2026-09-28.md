@@ -49,7 +49,7 @@ iPad 畫面約在 0.75–0.80 秒與 1.75–1.80 秒出現，粗估當時畫面�
 
 ## 第二次 iPad CSV：使用後延遲升高的時間點
 
-已取得 `C:\Users\johnl\Downloads\remotedesk-metrics-2026-09-28T13-02-58-464Z.csv`，
+已取得 `C:\Users\ExampleUser\Downloads\remotedesk-metrics-2026-09-28T13-02-58-464Z.csv`，
 共 263 筆、約 4 分 22 秒（CSV 的 UTC 時間 12:58:35–13:02:58）。
 此版 CSV 尚未包含低延遲模式、手把和音訊播放的狀態欄位。
 
@@ -74,7 +74,7 @@ iPad 畫面約在 0.75–0.80 秒與 1.75–1.80 秒出現，粗估當時畫面�
 
 ## 13:54 第二份 iPad CSV 與主機重啟
 
-`C:\Users\johnl\Downloads\remotedesk-metrics-2026-09-28T13-54-36-352Z.csv`
+`C:\Users\ExampleUser\Downloads\remotedesk-metrics-2026-09-28T13-54-36-352Z.csv`
 共 272 筆，CSV UTC 時間 13:50:04–13:54:35。`low_latency_requested`
 在 13:50:17–13:50:18 短暫為 1，13:50:28 起保持為 1；
 `low_latency_applied` 全程為 0。程式只在音訊和視訊接收器全部接受

@@ -30,7 +30,7 @@ FPS、最長畫面間隔、丟幀及解析度 CSV。這些變更尚待 iPad 實�
 
 ## Windows 主機啟動
 
-在 `C:\Users\johnl\Desktop\RemoteDesk`：
+在 `C:\Users\ExampleUser\Desktop\RemoteDesk`：
 
 ```powershell
 .\build.bat
@@ -38,7 +38,7 @@ FPS、最長畫面間隔、丟幀及解析度 CSV。這些變更尚待 iPad 實�
 cd bridge
 npm.cmd ci
 npm.cmd run preflight
-npm.cmd start -- --host=192.168.0.95 --enable-input --audio --display=0:0
+npm.cmd start -- --host=192.168.1.100 --enable-input --audio --display=0:0
 ```
 
 把示範 IP 換成 Windows 主機當下的私人區網 IP。若先求穩定、減少畫質負擔，

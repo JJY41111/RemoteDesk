@@ -1,7 +1,7 @@
 {
   "at": "2026-09-28T23:28:42.984Z",
   "analysis": {
-    "source": "C:/Users/johnl/Downloads/remotedesk-metrics-2026-09-28T17-04-46-423Z.csv",
+    "source": "C:/Users/ExampleUser/Downloads/remotedesk-metrics-2026-09-28T17-04-46-423Z.csv",
     "sourceSha256": "50c19d3b579d30e586bb28c9bf5760ea8a9b0edae2f9c49cafaf96b85beef2ac",
     "samples": 36,
     "firstEnabledAt": "2026-09-28T17:04:18.707Z",

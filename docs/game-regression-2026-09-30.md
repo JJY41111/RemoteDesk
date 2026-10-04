@@ -1,6 +1,6 @@
 # 2026-09-30 遊戲退步驗收與下一步
 
-使用者回報畫面卡到難以判斷操作延遲。本次 159 筆、約 2 分 38 秒的 iPad CSV 為 `C:\Users\johnl\Downloads\remotedesk-metrics-2026-09-30T14-48-51-961Z.csv`，SHA-256 `DC979DFF5322AC91159D20E0139A09714D04592C635AC547902949789267DF08`。
+使用者回報畫面卡到難以判斷操作延遲。本次 159 筆、約 2 分 38 秒的 iPad CSV 為 `C:\Users\ExampleUser\Downloads\remotedesk-metrics-2026-09-30T14-48-51-961Z.csv`，SHA-256 `DC979DFF5322AC91159D20E0139A09714D04592C635AC547902949789267DF08`。
 
 ## 診斷
 

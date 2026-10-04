@@ -5,7 +5,7 @@
 在原執行 bridge 的視窗按 Ctrl+C，再執行：
 
 ```powershell
-cd C:\Users\johnl\Desktop\RemoteDesk\bridge
+cd C:\Users\ExampleUser\Desktop\RemoteDesk\bridge
 .\start-ipad.cmd
 ```
 
