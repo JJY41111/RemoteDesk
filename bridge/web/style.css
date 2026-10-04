@@ -2,6 +2,7 @@
 * { box-sizing: border-box; }
 body { margin: 0; }
 header { display: flex; align-items: center; justify-content: space-between; padding: 12px 20px; background: #18212c; }
+body:not(:has(#session:not([hidden]))) > header { padding-top: calc(12px + env(safe-area-inset-top)); }
 h1 { font-size: 19px; margin: 0; }
 main { margin: 0 auto; padding: 16px; }
 button, input, textarea, select { font: inherit; }
@@ -13,6 +14,9 @@ button:disabled { opacity: .45; }
 .row { display: flex; gap: 8px; }
 #code { width: 12em; max-width: 65%; padding: 10px; border-radius: 7px; border: 1px solid #758298; background: #222f3e; color: white; letter-spacing: .16em; }
 #screenViewport { width: 100%; max-height: 77vh; overflow: auto; overscroll-behavior: contain; background: #000; }
+.stream-options { padding: 8px 12px; margin-bottom: 8px; background: #222f3e; border-radius: 7px; }
+.stream-options label { display: flex; align-items: center; gap: 6px; }
+.stream-options small { color: #9dacbc; }
 #screen { display: block; width: 100%; height: auto; max-height: 77vh; object-fit: contain; background: #000; touch-action: none; }
 #screenViewport.zoomed { height: 77vh; }
 #screenViewport.zoomed #screen { width: 150%; max-width: none; max-height: none; }
@@ -26,3 +30,57 @@ button:disabled { opacity: .45; }
 #inputStatus, #inputMetrics, #gamepadStatus, #gamepadHostStatus, #latencyStatus, #displayStatus { margin-top: 6px; color: #a8d9ff; }
 p { color: #bbc5d0; line-height: 1.4; }
 [hidden] { display: none !important; }
+
+/* The session occupies the available Safari viewport; menus overlay it. */
+body:has(#session:not([hidden])) { overflow: hidden; }
+body:has(#session:not([hidden])) > header { display: none; }
+body:has(#session:not([hidden])) main { padding: 0; }
+#session { position: fixed; inset: 0; height: 100dvh; background: #05080c;
+  --bar-height: 48px; padding-top: calc(var(--bar-height) + env(safe-area-inset-top)); }
+#sessionBar { position: absolute; z-index: 20; top: 0; left: 0; right: 0;
+  min-height: calc(var(--bar-height) + env(safe-area-inset-top));
+  padding: calc(4px + env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) 4px max(8px, env(safe-area-inset-left));
+  display: flex; gap: 6px; align-items: center; background: #17212cf5;
+  border-bottom: 1px solid #ffffff15; }
+#sessionBar button { padding: 8px 10px; background: #ffffff0d; white-space: nowrap; font-size: 14px; }
+#sessionBar #viewHint { order: 0; }
+#sessionBar #menuToggle { order: 1; }
+#sessionBar #zoomScreen { order: 2; }
+#sessionBar #panScreen { order: 3; }
+#sessionBar button:hover, #sessionBar button[aria-pressed="true"] { background: #356492; }
+#viewHint { flex: 1; color: #b6c8d9; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#session #screenViewport { height: 100%; max-height: none; width: 100%; }
+#session #screen { width: 100%; height: 100%; max-height: none; }
+#session #screenViewport.zoomed #screen { width: 150%; height: 150%; max-height: none; }
+#controlsPanel { position: absolute; z-index: 30;
+  top: calc(var(--bar-height) + env(safe-area-inset-top) + 6px); right: max(8px, env(safe-area-inset-right));
+  width: min(440px, calc(100% - 16px)); max-height: calc(100% - var(--bar-height) - env(safe-area-inset-top) - 14px);
+  overflow: auto; overscroll-behavior: contain; padding: 14px;
+  background: #182330fa; border: 1px solid #536477; border-radius: 14px;
+  box-shadow: 0 14px 45px #0008; font-size: 14px; }
+.panel-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.panel-heading button { background: #ffffff12; }
+#controlsPanel .toolbar { gap: 8px; }
+#controlsPanel .toolbar button { background: #2b4e76; }
+#controlsPanel .toolbar label { width: 100%; padding: 8px 0; }
+.transfer-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; margin: 8px 0 12px; }
+.transfer-card { min-width: 0; padding: 12px; border: 1px solid #536477; border-radius: 10px; background: #223247; }
+.transfer-card h2 { margin: 0 0 6px; font-size: 16px; }
+.transfer-card p { margin: 0 0 10px; font-size: 12px; }
+.transfer-card textarea { width: 100%; min-height: 76px; resize: vertical; padding: 8px;
+  border: 1px solid #758298; border-radius: 7px; background: #172434; color: white; }
+.transfer-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.transfer-actions button, .transfer-card > button, .file-button { padding: 8px 10px; background: #2b669e;
+  border-radius: 7px; color: white; font-size: 12px; }
+.file-button { display: inline-flex; align-items: center; cursor: pointer; }
+#uploadFiles { display: block; width: 100%; max-width: 100%; margin: 8px 0; font-size: 12px; }
+#clipboardStatus, #uploadStatus, #clipboardPreview { margin-top: 8px; color: #b8defa; overflow-wrap: anywhere; }
+#clipboardPreview img { display: block; max-width: 100%; max-height: 110px; object-fit: contain; }
+#controlsPanel details { margin-top: 8px; padding: 8px; border: 1px solid #536477; border-radius: 7px; }
+#controlsPanel details summary { cursor: pointer; }
+#controlsPanel details textarea { margin-top: 8px; }
+@media (max-width: 600px) {
+  #viewHint { display: none; }
+  #sessionBar { justify-content: flex-end; gap: 2px; }
+  #sessionBar button { padding: 8px 6px; font-size: 12px; }
+}

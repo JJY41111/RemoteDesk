@@ -1,0 +1,55 @@
+RemoteDesk runtime started
+window: created
+initialize: start
+initialize: DXGI factory created
+initialize: adapter selected
+initialize: output selected: adapter=0, output=0
+initialize: capture source=2560x1440
+initialize: D3D11 device created
+initialize: desktop duplication created
+initialize: swap chain created
+initialize: complete
+window: shown
+capture: first frame presented
+network live: conversion=D3D11 video processor
+network live: connected to 127.0.0.1:5000 at 1920x1080@60
+network perf: capture_fps=84.0, encoded_fps=57.3, capture_avg_ms=6.53, convert_avg_ms=2.68, encode_avg_ms=2.45, timeouts=20, conversion=gpu
+network perf: capture_fps=75.0, encoded_fps=60.2, capture_avg_ms=7.25, convert_avg_ms=2.37, encode_avg_ms=2.48, timeouts=22, conversion=gpu
+network perf: capture_fps=76.4, encoded_fps=59.5, capture_avg_ms=6.85, convert_avg_ms=2.28, encode_avg_ms=2.36, timeouts=26, conversion=gpu
+network perf: capture_fps=9.8, encoded_fps=17.7, capture_avg_ms=1.80, convert_avg_ms=48.69, encode_avg_ms=4.08, timeouts=11, conversion=gpu
+network perf: capture_fps=9.1, encoded_fps=13.6, capture_avg_ms=1.85, convert_avg_ms=67.98, encode_avg_ms=3.80, timeouts=7, conversion=gpu
+network perf: capture_fps=11.8, encoded_fps=16.4, capture_avg_ms=3.24, convert_avg_ms=54.25, encode_avg_ms=4.13, timeouts=8, conversion=gpu
+network perf: capture_fps=10.7, encoded_fps=17.4, capture_avg_ms=1.07, convert_avg_ms=50.98, encode_avg_ms=4.07, timeouts=10, conversion=gpu
+network perf: capture_fps=6.4, encoded_fps=10.9, capture_avg_ms=0.11, convert_avg_ms=86.61, encode_avg_ms=4.14, timeouts=7, conversion=gpu
+network perf: capture_fps=12.0, encoded_fps=15.7, capture_avg_ms=2.76, convert_avg_ms=56.14, encode_avg_ms=4.34, timeouts=8, conversion=gpu
+network perf: capture_fps=8.6, encoded_fps=14.3, capture_avg_ms=0.69, convert_avg_ms=63.68, encode_avg_ms=4.13, timeouts=9, conversion=gpu
+network perf: capture_fps=5.8, encoded_fps=11.6, capture_avg_ms=0.09, convert_avg_ms=82.15, encode_avg_ms=3.91, timeouts=6, conversion=gpu
+network perf: capture_fps=14.0, encoded_fps=16.0, capture_avg_ms=2.45, convert_avg_ms=53.38, encode_avg_ms=4.32, timeouts=11, conversion=gpu
+network perf: capture_fps=14.3, encoded_fps=17.1, capture_avg_ms=2.48, convert_avg_ms=49.72, encode_avg_ms=4.14, timeouts=11, conversion=gpu
+network perf: capture_fps=10.6, encoded_fps=13.5, capture_avg_ms=0.66, convert_avg_ms=66.00, encode_avg_ms=4.24, timeouts=8, conversion=gpu
+network perf: capture_fps=8.6, encoded_fps=15.3, capture_avg_ms=0.32, convert_avg_ms=59.84, encode_avg_ms=4.10, timeouts=8, conversion=gpu
+network perf: capture_fps=7.9, encoded_fps=11.8, capture_avg_ms=0.33, convert_avg_ms=78.91, encode_avg_ms=3.86, timeouts=7, conversion=gpu
+network perf: capture_fps=8.9, encoded_fps=12.4, capture_avg_ms=1.30, convert_avg_ms=73.12, encode_avg_ms=3.76, timeouts=9, conversion=gpu
+network perf: capture_fps=9.7, encoded_fps=16.4, capture_avg_ms=1.65, convert_avg_ms=55.53, encode_avg_ms=3.75, timeouts=8, conversion=gpu
+network perf: capture_fps=10.9, encoded_fps=12.9, capture_avg_ms=1.07, convert_avg_ms=68.42, encode_avg_ms=4.17, timeouts=9, conversion=gpu
+network perf: capture_fps=15.2, encoded_fps=19.0, capture_avg_ms=1.82, convert_avg_ms=43.13, encode_avg_ms=4.53, timeouts=13, conversion=gpu
+network perf: capture_fps=10.0, encoded_fps=11.8, capture_avg_ms=1.62, convert_avg_ms=76.15, encode_avg_ms=3.92, timeouts=8, conversion=gpu
+network perf: capture_fps=13.4, encoded_fps=16.9, capture_avg_ms=1.46, convert_avg_ms=50.45, encode_avg_ms=4.43, timeouts=12, conversion=gpu
+network perf: capture_fps=9.9, encoded_fps=14.5, capture_avg_ms=0.83, convert_avg_ms=60.73, encode_avg_ms=4.90, timeouts=9, conversion=gpu
+network perf: capture_fps=7.5, encoded_fps=13.1, capture_avg_ms=0.25, convert_avg_ms=70.57, encode_avg_ms=4.25, timeouts=7, conversion=gpu
+network perf: capture_fps=9.7, encoded_fps=13.6, capture_avg_ms=2.33, convert_avg_ms=65.66, encode_avg_ms=4.04, timeouts=9, conversion=gpu
+network perf: capture_fps=7.9, encoded_fps=12.8, capture_avg_ms=0.34, convert_avg_ms=70.33, encode_avg_ms=4.50, timeouts=8, conversion=gpu
+network perf: capture_fps=12.9, encoded_fps=17.8, capture_avg_ms=1.67, convert_avg_ms=48.90, encode_avg_ms=4.41, timeouts=10, conversion=gpu
+network perf: capture_fps=5.9, encoded_fps=11.8, capture_avg_ms=0.10, convert_avg_ms=80.67, encode_avg_ms=3.52, timeouts=6, conversion=gpu
+network perf: capture_fps=6.6, encoded_fps=11.3, capture_avg_ms=0.50, convert_avg_ms=81.92, encode_avg_ms=4.62, timeouts=6, conversion=gpu
+network perf: capture_fps=11.7, encoded_fps=17.6, capture_avg_ms=1.81, convert_avg_ms=47.91, encode_avg_ms=4.64, timeouts=12, conversion=gpu
+network perf: capture_fps=5.8, encoded_fps=12.5, capture_avg_ms=0.10, convert_avg_ms=75.54, encode_avg_ms=4.12, timeouts=7, conversion=gpu
+network perf: capture_fps=10.9, encoded_fps=16.9, capture_avg_ms=0.86, convert_avg_ms=51.87, encode_avg_ms=5.59, timeouts=9, conversion=gpu
+network perf: capture_fps=10.9, encoded_fps=19.8, capture_avg_ms=0.14, convert_avg_ms=43.73, encode_avg_ms=5.08, timeouts=11, conversion=gpu
+network perf: capture_fps=15.6, encoded_fps=22.5, capture_avg_ms=1.11, convert_avg_ms=35.05, encode_avg_ms=5.20, timeouts=13, conversion=gpu
+network perf: capture_fps=13.6, encoded_fps=23.3, capture_avg_ms=1.27, convert_avg_ms=35.35, encode_avg_ms=5.23, timeouts=13, conversion=gpu
+network perf: capture_fps=10.0, encoded_fps=17.0, capture_avg_ms=1.48, convert_avg_ms=51.67, encode_avg_ms=4.55, timeouts=8, conversion=gpu
+network perf: capture_fps=11.2, encoded_fps=15.9, capture_avg_ms=1.01, convert_avg_ms=53.82, encode_avg_ms=5.02, timeouts=10, conversion=gpu
+network perf: capture_fps=5.3, encoded_fps=10.7, capture_avg_ms=0.09, convert_avg_ms=89.36, encode_avg_ms=4.05, timeouts=6, conversion=gpu
+network perf: capture_fps=10.4, encoded_fps=15.1, capture_avg_ms=0.88, convert_avg_ms=59.67, encode_avg_ms=5.20, timeouts=8, conversion=gpu
+network perf: capture_fps=5.5, encoded_fps=10.9, capture_avg_ms=0.08, convert_avg_ms=86.09, encode_avg_ms=4.89, timeouts=6, conversion=gpu

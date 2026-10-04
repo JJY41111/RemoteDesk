@@ -9,7 +9,7 @@ export function parseHeader(buffer, expectedSequence) {
   const field = index => buffer.readUInt32BE(index * 4);
   const width = field(3), height = field(4), fps = field(16);
   const validFormat = (width === 1280 && height === 720 && (fps === 30 || fps === 60)) ||
-    (width === 1920 && height === 1080 && fps === 60) ||
+    (width === 1920 && height === 1080 && (fps === 30 || fps === 60)) ||
     (width === 2560 && height === 1440 && fps === 60);
   if (field(0) !== MAGIC || field(1) !== VERSION || field(2) !== expectedSequence ||
       !validFormat || field(5) === 0 || field(5) > MAX_PAYLOAD) {
@@ -17,25 +17,53 @@ export function parseHeader(buffer, expectedSequence) {
   }
   return {
     sequence: field(2), width, height, fps, length: field(5),
-    sampleTime: (BigInt(field(6)) << 32n) | BigInt(field(7))
+    sampleTime: (BigInt(field(6)) << 32n) | BigInt(field(7)),
+    sourceEventQpc: (BigInt(field(12)) << 32n) | BigInt(field(13))
   };
 }
 
 export class FrameReader {
   constructor(onFrame) {
     this.onFrame = onFrame;
-    this.buffer = Buffer.alloc(0);
+    this.headerBuffer = Buffer.alloc(HEADER_BYTES);
+    this.headerBytes = 0;
+    this.header = null;
+    this.payload = null;
+    this.payloadBytes = 0;
     this.sequence = 0;
   }
   push(chunk) {
-    this.buffer = Buffer.concat([this.buffer, chunk]);
-    while (this.buffer.length >= HEADER_BYTES) {
-      const header = parseHeader(this.buffer.subarray(0, HEADER_BYTES), this.sequence);
-      if (this.buffer.length < HEADER_BYTES + header.length) break;
-      const data = this.buffer.subarray(HEADER_BYTES, HEADER_BYTES + header.length);
-      this.buffer = this.buffer.subarray(HEADER_BYTES + header.length);
-      this.sequence++;
-      this.onFrame(header, data);
+    let offset = 0;
+    while (offset < chunk.length) {
+      if (!this.header) {
+        const count = Math.min(HEADER_BYTES - this.headerBytes, chunk.length - offset);
+        chunk.copy(this.headerBuffer, this.headerBytes, offset, offset + count);
+        this.headerBytes += count; offset += count;
+        if (this.headerBytes < HEADER_BYTES) continue;
+        // Validate before allocating a payload; malformed lengths remain bounded.
+        this.header = parseHeader(this.headerBuffer, this.sequence);
+      }
+      const remaining = this.header.length - this.payloadBytes;
+      if (!this.payload && chunk.length - offset >= remaining) {
+        const data = chunk.subarray(offset, offset + remaining);
+        offset += remaining;
+        const header = this.header;
+        this.header = null; this.headerBytes = 0; this.sequence++;
+        this.onFrame(header, data);
+        continue;
+      }
+      // Allocate once for a fragmented frame instead of copying the accumulated
+      // frame again for every TCP chunk. Each payload byte is copied once.
+      this.payload ??= Buffer.allocUnsafe(this.header.length);
+      const count = Math.min(remaining, chunk.length - offset);
+      chunk.copy(this.payload, this.payloadBytes, offset, offset + count);
+      this.payloadBytes += count; offset += count;
+      if (this.payloadBytes === this.header.length) {
+        const header = this.header, data = this.payload;
+        this.header = null; this.headerBytes = 0;
+        this.payload = null; this.payloadBytes = 0; this.sequence++;
+        this.onFrame(header, data);
+      }
     }
   }
 }

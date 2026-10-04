@@ -51,7 +51,17 @@ int ListDisplays() {
 }
 
 bool Send(INPUT input) {
-    return SendInput(1, &input, sizeof(input)) == 1;
+    if (SendInput(1, &input, sizeof(input)) == 1) return true;
+    // SendInput can fail (for example, on a protected/elevated desktop).
+    // Keep diagnostics bounded even when a pointer move arrives every frame.
+    static ULONGLONG nextReportAt = 0;
+    const DWORD error = GetLastError();
+    const ULONGLONG now = GetTickCount64();
+    if (now >= nextReportAt) {
+        std::cerr << "SendInput failed; error=" << error << '\n';
+        nextReportAt = now + 1000;
+    }
+    return false;
 }
 
 void MouseMove(int x, int y, const RECT& display) {
@@ -89,6 +99,15 @@ void MouseButton(int button, bool down) {
     Send(input);
 }
 
+void MouseRelative(int x, int y) {
+    INPUT input{};
+    input.type = INPUT_MOUSE;
+    input.mi.dx = x;
+    input.mi.dy = y;
+    input.mi.dwFlags = MOUSEEVENTF_MOVE;
+    Send(input);
+}
+
 void MouseWheel(int delta) {
     INPUT input{};
     input.type = INPUT_MOUSE;
@@ -96,6 +115,19 @@ void MouseWheel(int delta) {
     input.mi.dwFlags = MOUSEEVENTF_WHEEL;
     Send(input);
 }
+
+constexpr bool ExtendedNavigationKey(unsigned key) {
+    switch (key) {
+    case VK_LEFT: case VK_UP: case VK_RIGHT: case VK_DOWN:
+    case VK_HOME: case VK_END: case VK_PRIOR: case VK_NEXT:
+    case VK_INSERT: case VK_DELETE:
+        return true;
+    default:
+        return false;
+    }
+}
+static_assert(ExtendedNavigationKey(VK_LEFT) && ExtendedNavigationKey(VK_DOWN));
+static_assert(!ExtendedNavigationKey(VK_NUMPAD4));
 
 void Key(unsigned key, bool down) {
     if (key > 255) return;
@@ -105,7 +137,8 @@ void Key(unsigned key, bool down) {
     if (scan != 0) {
         input.ki.wScan = static_cast<WORD>(scan & 0xff);
         input.ki.dwFlags = KEYEVENTF_SCANCODE |
-            ((scan & 0xff00) == 0xe000 ? KEYEVENTF_EXTENDEDKEY : 0);
+            (((scan & 0xff00) == 0xe000 || ExtendedNavigationKey(key)) ?
+             KEYEVENTF_EXTENDEDKEY : 0);
     } else {
         input.ki.wVk = static_cast<WORD>(key);
     }
@@ -160,6 +193,9 @@ int main(int argc, char** argv) {
         std::cerr << error.what() << '\n';
         return 1;
     }
+    // The bridge must not report remote control as active until the selected
+    // Windows display has been opened successfully.
+    std::cout << "READY\n" << std::flush;
     std::set<unsigned> heldKeys;
     std::set<int> heldButtons;
     const auto releaseHeld = [&] {
@@ -177,6 +213,10 @@ int main(int argc, char** argv) {
             int x = -1, y = -1;
             if (command >> x >> y && x >= 0 && x <= 65535 &&
                 y >= 0 && y <= 65535) MouseMove(x, y, display);
+        } else if (kind == 'D') {
+            int x = 0, y = 0;
+            if (command >> x >> y && x >= -2048 && x <= 2048 &&
+                y >= -2048 && y <= 2048) MouseRelative(x, y);
         } else if (kind == 'B') {
             int button = -1, down = -1;
             if (command >> button >> down && button >= 0 && button <= 2 &&

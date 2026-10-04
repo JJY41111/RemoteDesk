@@ -5,7 +5,7 @@ export function keyToVk(code) {
   return {
     ArrowLeft: 0x25, ArrowUp: 0x26, ArrowRight: 0x27, ArrowDown: 0x28,
     Enter: 0x0d, Escape: 0x1b, Space: 0x20, Backspace: 0x08,
-    Tab: 0x09, ShiftLeft: 0x10, ShiftRight: 0x10,
+    Tab: 0x09, CapsLock: 0x14, Insert: 0x2d, ShiftLeft: 0xa0, ShiftRight: 0xa1,
     ControlLeft: 0x11, ControlRight: 0x11,
     AltLeft: 0x12, AltRight: 0x12,
     MetaLeft: 0x5b, MetaRight: 0x5c,

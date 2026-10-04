@@ -4,6 +4,7 @@
 #include <wrl/client.h>
 
 #include <chrono>
+#include <array>
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -24,6 +25,9 @@ struct LoopbackStatistics {
     double averageQueueMilliseconds{};
     double averageDecodeMilliseconds{};
     bool decodedFrameContainsImage{};
+    std::uint64_t gpuQueueSkips{};
+    std::uint64_t gpuStaleFrames{};
+    double gpuReadbackAgeMilliseconds{};
 };
 
 class H264Loopback {
@@ -37,10 +41,13 @@ public:
                UINT sourceWidth, UINT sourceHeight, UINT outputWidth = 1280,
                UINT outputHeight = 720, UINT framesPerSecond = 30,
                UINT bitrate = 4'000'000, bool decodeLocally = true,
-               bool preferGpuConversion = true);
+               bool preferGpuConversion = true, bool recoveryKeyframes = false,
+               bool boundedBitrate = false, bool adaptiveRecovery = false);
     bool ProcessFrameIfDue(ID3D11Texture2D* sourceTexture,
                            std::uint64_t sourceEventQpc = 0,
                            std::uint64_t captureReadyQpc = 0);
+    bool SetTargetBitrate(UINT bitrate);
+    void RequestRecoveryKeyframe() { nextRecoveryKeyframe_ = Clock::now(); }
     void Stop(bool emitFinalPackets = true);
     void SetPacketCallback(std::function<void(
         const std::vector<std::uint8_t>&, LONGLONG, LONGLONG,
@@ -71,10 +78,25 @@ private:
         std::uint64_t captureReadyQpc{};
     };
 
+    struct GpuReadback {
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+        bool pending{};
+        std::uint64_t sequence{};
+        LONGLONG sampleTime{};
+        SourceTimestamps source;
+        Clock::time_point queuedAt{};
+    };
+
     void ConvertLatestFrameToNv12();
     bool TryInitializeGpuConversion(ID3D11Device* device,
                                     ID3D11DeviceContext* context);
     bool ConvertOnGpu(ID3D11Texture2D* sourceTexture);
+    bool QueueGpuConversion(ID3D11Texture2D* sourceTexture,
+                            ID3D11Texture2D* destination);
+    bool ProcessGpuFrame(ID3D11Texture2D* sourceTexture,
+                         SourceTimestamps source, Clock::time_point now);
+    bool ReadLatestGpuFrame();
+    void CopyMappedNv12(const D3D11_MAPPED_SUBRESOURCE& mapped);
     void SubmitNv12Frame();
     void DrainEncoder();
     void DecodeQueuedPackets();
@@ -91,6 +113,9 @@ private:
     Microsoft::WRL::ComPtr<ID3D11VideoProcessorOutputView> videoOutputView_;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> gpuNv12Texture_;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> gpuNv12Staging_;
+    std::array<GpuReadback, 3> gpuReadbacks_;
+    std::uint64_t gpuSequence_{};
+    std::uint64_t gpuDeliveredSequence_{};
     Microsoft::WRL::ComPtr<ID3D11Texture2D> videoInputTexture_;
     Microsoft::WRL::ComPtr<IMFTransform> encoder_;
     Microsoft::WRL::ComPtr<IMFTransform> decoder_;
@@ -113,6 +138,9 @@ private:
     LONGLONG sampleDuration_{};
     Clock::time_point nextFrameDue_{};
     Clock::time_point streamStartedAt_{};
+    Clock::time_point nextRecoveryKeyframe_{};
+    bool recoveryKeyframes_{};
+    bool adaptiveRecovery_{};
 
     LoopbackStatistics statistics_{};
     double totalConversionMilliseconds_{};

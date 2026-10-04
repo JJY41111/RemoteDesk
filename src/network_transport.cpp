@@ -29,7 +29,8 @@ bool SupportedVideoFormat(unsigned width, unsigned height,
                           unsigned framesPerSecond) {
     return (width == 1280 && height == 720 &&
             (framesPerSecond == 30 || framesPerSecond == 60)) ||
-           (width == 1920 && height == 1080 && framesPerSecond == 60) ||
+           (width == 1920 && height == 1080 &&
+            (framesPerSecond == 30 || framesPerSecond == 60)) ||
            (width == 2560 && height == 1440 && framesPerSecond == 60);
 }
 

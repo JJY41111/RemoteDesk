@@ -8,6 +8,7 @@
     "setup": "node setup.mjs",
     "preflight": "node preflight.mjs",
     "start": "node server.mjs",
+    "start:tailnet": "node start-tailnet.mjs",
     "test": "node --test test/*.test.mjs",
     "test:browser": "node test/browser.mjs",
     "test:ui": "node test/ui.mjs",

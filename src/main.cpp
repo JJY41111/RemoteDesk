@@ -9,10 +9,12 @@
 #include "network_transport.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <fstream>
 #include <iomanip>
+#include <thread>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -29,6 +31,37 @@ bool gToggleRecordingRequested = false;
 bool gToggleLoopbackRequested = false;
 std::string gMoveCaptureError;
 unsigned long long gMoveCaptureFrames = 0;
+std::atomic<unsigned> gRequestedWanBitrate{0};
+std::atomic<bool> gRequestedRecoveryKeyframe{false};
+bool gAdaptiveRecovery = false;
+
+void ReadWanBitrateCommands() {
+    const HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+    if (input == nullptr || input == INVALID_HANDLE_VALUE) return;
+    std::string pending;
+    char bytes[128];
+    DWORD count = 0;
+    while (ReadFile(input, bytes, sizeof(bytes), &count, nullptr) && count) {
+        pending.append(bytes, count);
+        for (;;) {
+            const auto newline = pending.find('\n');
+            if (newline == std::string::npos) break;
+            const auto command = pending.substr(0, newline);
+            pending.erase(0, newline + 1);
+            if (command == "KEYFRAME") {
+                gRequestedRecoveryKeyframe.store(true);
+                continue;
+            }
+            if (command.rfind("BITRATE ", 0) != 0) continue;
+            try {
+                const auto kbps = std::stoul(command.substr(8));
+                if (kbps >= 2200 && kbps <= 8000)
+                    gRequestedWanBitrate.store(static_cast<unsigned>(kbps * 1000));
+            } catch (const std::exception&) { /* Ignore malformed commands. */ }
+        }
+        if (pending.size() > 128) pending.clear();
+    }
+}
 
 void CaptureWhileMoving(HWND window);
 
@@ -221,7 +254,8 @@ public:
     void Initialize(HWND window, bool automaticRecordingTest,
                     bool automaticLoopbackTest, bool loopback1080Test,
                     bool loopbackNativeTest,
-                    bool cpuConversion, bool networkNative,
+                    bool cpuConversion, bool networkNative, bool recoveryKeyframes, bool wanVideo,
+                    bool mobileVideo,
                     bool automaticNetworkTest,
                     bool continuousNetwork, unsigned networkFramesPerSecond,
                     unsigned networkOutputWidth,
@@ -236,6 +270,9 @@ public:
         loopback1080Test_ = loopback1080Test;
         loopbackNativeTest_ = loopbackNativeTest;
         cpuConversion_ = cpuConversion;
+        recoveryKeyframes_ = recoveryKeyframes;
+        wanVideo_ = wanVideo;
+        mobileVideo_ = mobileVideo;
         networkNative_ = networkNative;
         automaticNetworkTest_ = automaticNetworkTest;
         continuousNetwork_ = continuousNetwork;
@@ -762,11 +799,14 @@ private:
             loopback_.Start(device_.Get(), context_.Get(), width_, height_,
                             networkOutputWidth_, networkOutputHeight_,
                             networkFramesPerSecond_,
-                            networkOutputHeight_ > 1080 ? 24'000'000
+            mobileVideo_ ? 5'000'000 : wanVideo_ ? 8'000'000
+                                : networkOutputHeight_ > 1080 ? 24'000'000
+                                : networkOutputHeight_ == 1080 && networkFramesPerSecond_ == 30 ? 10'000'000
                                 : networkOutputHeight_ == 1080 ? 16'000'000
                                 : networkFramesPerSecond_ == 60 ? 8'000'000
                                                                 : 4'000'000,
-                            false, !cpuConversion_);
+                            false, !cpuConversion_, recoveryKeyframes_,
+                            wanVideo_ || mobileVideo_, gAdaptiveRecovery);
             automaticNetworkStarted_ = true;
             automaticNetworkStart_ = Clock::now();
             Log(std::string("network live: conversion=") +
@@ -783,6 +823,19 @@ private:
         }
 
         if (continuousNetwork_) {
+            if (gAdaptiveRecovery && gRequestedRecoveryKeyframe.exchange(false)) {
+                loopback_.RequestRecoveryKeyframe();
+                Log("network recovery: requested keyframe");
+            }
+            if (wanVideo_ || mobileVideo_) {
+                const unsigned requested = gRequestedWanBitrate.exchange(0);
+                if (requested) {
+                    const bool applied = loopback_.SetTargetBitrate(requested);
+                    Log(std::string("network bitrate: ") +
+                        (applied ? "applied " : "rejected ") +
+                        std::to_string(requested / 1000) + " kbps");
+                }
+            }
             return;
         }
         const double elapsedSeconds = std::chrono::duration<double>(
@@ -828,7 +881,10 @@ private:
                                             submitted : 0.0)
                         << ", timeouts=" << timeouts_
                         << ", conversion="
-                        << (loopback_.UsesGpuConversion() ? "gpu" : "cpu");
+                        << (loopback_.UsesGpuConversion() ? "gpu-async" : "cpu")
+                        << ", gpu_readback_age_ms=" << current.gpuReadbackAgeMilliseconds
+                        << ", gpu_queue_skips_total=" << current.gpuQueueSkips
+                        << ", gpu_stale_frames_total=" << current.gpuStaleFrames;
             Log(performance.str());
             lastSubmitted_ = current.submittedFrames;
             lastEncoded_ = current.encodedFrames;
@@ -919,6 +975,9 @@ private:
     Clock::time_point automaticLoopbackStart_{};
     bool automaticNetworkTest_{};
     bool continuousNetwork_{};
+    bool recoveryKeyframes_{};
+    bool wanVideo_{};
+    bool mobileVideo_{};
     unsigned networkFramesPerSecond_{30};
     unsigned networkOutputWidth_{1280};
     unsigned networkOutputHeight_{720};
@@ -1020,6 +1079,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine,
             wcsstr(commandLine, L"--network-1080-60-test") != nullptr;
         const bool network1080Live = commandLine != nullptr &&
             wcsstr(commandLine, L"--network-1080-60-live") != nullptr;
+        const bool network1080StableTest = commandLine != nullptr &&
+            wcsstr(commandLine, L"--network-1080-30-test") != nullptr;
+        const bool network1080StableLive = commandLine != nullptr &&
+            wcsstr(commandLine, L"--network-1080-30-live") != nullptr;
         const bool networkNativeTest = commandLine != nullptr &&
             wcsstr(commandLine, L"--network-native-60-test") != nullptr;
         const bool networkNativeLive = commandLine != nullptr &&
@@ -1032,22 +1095,27 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine,
                 static_cast<int>(network60Live) +
                 static_cast<int>(network1080Test) +
                 static_cast<int>(network1080Live) +
+                static_cast<int>(network1080StableTest) +
+                static_cast<int>(network1080StableLive) +
                 static_cast<int>(networkNativeTest) +
                 static_cast<int>(networkNativeLive) > 1) {
             throw std::invalid_argument("Choose only one test or live mode");
         }
         const bool automaticNetworkTest =
             network30Test || network60Test || network1080Test ||
+            network1080StableTest ||
             networkNativeTest;
         const bool continuousNetwork =
             network30Live || network60Live || network1080Live ||
+            network1080StableLive ||
             networkNativeLive;
         const unsigned networkFramesPerSecond =
             network60Test || network60Live || network1080Test ||
                     network1080Live || networkNativeTest || networkNativeLive
                 ? 60u
                 : 30u;
-        const bool network1080 = network1080Test || network1080Live;
+        const bool network1080 = network1080Test || network1080Live ||
+            network1080StableTest || network1080StableLive;
         const bool networkNative = networkNativeTest || networkNativeLive;
         const bool durationSpecified =
             commandLine != nullptr &&
@@ -1079,6 +1147,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine,
                                automaticLoopbackTest, loopback1080Test,
                                loopbackNativeTest,
                                cpuConversion, networkNative,
+                               commandLine && wcsstr(commandLine, L"--recovery-keyframes"),
+                               commandLine && wcsstr(commandLine, L"--wan-video"),
+                               commandLine && wcsstr(commandLine, L"--wan-video-mobile"),
                                automaticNetworkTest,
                                continuousNetwork, networkFramesPerSecond,
                                network1080 ? 1920u : 1280u,
@@ -1086,6 +1157,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine,
                                networkTestDurationSeconds, networkTcpPort,
                                adapterIndex, outputIndex);
         gApplication = &application;
+
+        gAdaptiveRecovery = commandLine && wcsstr(commandLine, L"--adaptive-recovery");
+        if (continuousNetwork &&
+            commandLine && wcsstr(commandLine, L"--wan-video")) {
+            std::thread(ReadWanBitrateCommands).detach();
+        }
 
         ShowWindow(window, showCommand);
         UpdateWindow(window);

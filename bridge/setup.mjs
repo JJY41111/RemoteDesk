@@ -12,7 +12,7 @@ const caPath = new URL('ca.crt', directory);
 const caKeyPath = new URL('ca-key.pem', directory);
 
 export async function ensureCertificate(requiredIp = '127.0.0.1') {
-  const addresses = ['127.0.0.1'];
+  const addresses = ['127.0.0.1', requiredIp];
   for (const entries of Object.values(networkInterfaces())) {
     for (const entry of entries || []) {
       if (entry.family === 'IPv4' && !entry.internal &&

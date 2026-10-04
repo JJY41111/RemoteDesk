@@ -12,6 +12,11 @@ export function validGamepad(value) {
     value.axes.every(n => Number.isFinite(n) && n >= -1 && n <= 1);
 }
 
+export function acceptsGamepadSequence(value, lastSeq) {
+  if (Number.isSafeInteger(value.seq) && value.seq >= 0) return value.seq > lastSeq;
+  return lastSeq < 0 && value.seq === undefined;
+}
+
 export function xbox360Packet(value) {
   if (!validGamepad(value)) throw new Error('Invalid gamepad state');
   let buttons = 0;
@@ -49,9 +54,10 @@ function request(command, port, timeoutMs = 10000) {
 }
 
 export class ViiperGamepad {
-  constructor({ port = 3242, onStatus = () => {} } = {}) {
+  constructor({ port = 3242, onStatus = () => {}, onOffline = () => {} } = {}) {
     this.port = port;
     this.onStatus = onStatus;
+    this.onOffline = onOffline;
     this.closed = false;
     this.stream = null;
     this.busId = null;
@@ -59,27 +65,29 @@ export class ViiperGamepad {
     this.lastInput = 0;
   }
 
-  async open() {
+  open() {
+    return this.openPromise ??= this.openDevice();
+  }
+
+  async openDevice() {
+    if (this.closed) return;
     const identity = await request('ping', this.port);
     if (identity.server !== 'VIIPER') throw new Error('Port is not VIIPER');
+    if (this.closed) return;
     const bus = await request('bus/create', this.port);
     if (!Number.isSafeInteger(bus.busId)) throw new Error('Invalid VIIPER bus');
     this.busId = bus.busId;
-    if (this.closed) {
-      await request(`bus/remove ${this.busId}`, this.port).catch(() => {});
-      return;
-    }
+    if (this.closed) return;
     const device = await request(`bus/${this.busId}/add {"type":"xbox360"}`, this.port);
     if (!/^\d+$/.test(String(device.devId))) throw new Error('Invalid VIIPER device');
     this.devId = String(device.devId);
-    if (this.closed) {
-      await request(`bus/remove ${this.busId}`, this.port).catch(() => {});
-      return;
-    }
+    if (this.closed) return;
     await new Promise((resolve, reject) => {
       const stream = connect({ host: '127.0.0.1', port: this.port });
       this.stream = stream;
+      stream.setNoDelay(true);
       stream.setTimeout(1500);
+      stream.on('timeout', () => stream.destroy(new Error('VIIPER stream timed out')));
       stream.once('connect', () => {
         stream.write(`bus/${this.busId}/${this.devId}\0`);
         stream.setTimeout(0);
@@ -87,10 +95,16 @@ export class ViiperGamepad {
       });
       stream.once('error', reject);
       stream.on('close', () => {
+        reject(new Error('VIIPER stream closed'));
         this.stream = null;
-        if (!this.closed) this.onStatus('虛擬手把資料流中斷');
+        if (!this.closed) {
+          this.onStatus('虛擬手把資料流中斷；正在移除虛擬裝置');
+          this.onOffline();
+          void this.close().catch(error => this.onStatus(`虛擬手把移除失敗：${error.message}`));
+        }
       });
     });
+    if (this.closed) return;
     this.watchdog = setInterval(() => {
       if (this.lastInput && Date.now() - this.lastInput > 500) {
         this.neutral();
@@ -101,9 +115,10 @@ export class ViiperGamepad {
   }
 
   send(value) {
-    if (!this.stream?.writable || this.stream.writableLength > 4096) return;
+    if (this.closed || !this.stream?.writable || this.stream.writableLength > 4096) return false;
     this.stream.write(xbox360Packet(value));
     this.lastInput = Date.now();
+    return true;
   }
 
   neutral() {
@@ -116,8 +131,23 @@ export class ViiperGamepad {
     clearInterval(this.watchdog);
     this.neutral();
     this.stream?.end();
-    this.closePromise = this.busId !== null ?
-      request(`bus/remove ${this.busId}`, this.port).catch(() => {}) : Promise.resolve();
+    // Creation can still be in flight. Wait for its bus ID before removing it.
+    this.closePromise = (async () => {
+      await this.openPromise?.catch(() => {});
+      this.neutral();
+      this.stream?.end();
+      if (this.busId === null) return;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          await request(`bus/remove ${this.busId}`, this.port, 2000);
+          this.busId = null;
+          return;
+        } catch (error) {
+          if (attempt === 2) throw error;
+          await new Promise(resolve => setTimeout(resolve, 250));
+        }
+      }
+    })();
     return this.closePromise;
   }
 }

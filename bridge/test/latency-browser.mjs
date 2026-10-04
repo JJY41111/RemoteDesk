@@ -37,6 +37,8 @@ try {
   await page.waitForFunction(() => peer?.connectionState === 'connected');
   await page.waitForFunction(() => latencyState?.videoHintSuppressed === true);
   await page.waitForFunction(() => latencyState?.audioQueueLimitMs === 120);
+  // Controls now live in the PWA menu; exercise the actual visible UI.
+  await page.locator('#menuToggle').click();
   assert.ok(!(await page.evaluate(() => peer.remoteDescription.sdp)).includes('playout-delay'),
     'Unsafe video playout extension was offered');
   await page.locator('#sound').evaluate(element => { element.volume = 0; });
@@ -146,7 +148,14 @@ try {
     assert.ok(after - before > 30, `Video stopped after mode=${enabled}: ${after - before}`);
     assert.ok(presentedAfter - presentedBefore > 30,
       `Video decoded but stopped presenting after mode=${enabled}: ${presentedAfter - presentedBefore}`);
-    const state = await page.evaluate(() => ({ ...latencyState, metrics: { ...receiverMetrics } }));
+    const state = await page.evaluate(() => ({ ...latencyState,
+      metrics: { ...receiverMetrics }, requested: { ...requestedReceiverLatency } }));
+    if (enabled && stages[0]?.state.metrics.videoTargetMs < 140)
+      assert.equal(state.requested.video, null,
+        'Low mode must not raise an already-small video jitter buffer');
+    if (enabled && stages[0]?.state.metrics.audioTargetMs < 220)
+      assert.equal(state.requested.audio, null,
+        'Low mode must not raise an already-small audio jitter buffer');
     assert.equal(state.applied, enabled);
     assert.equal(state.audioQueueLimitMs, enabled ? 60 : 120);
     const audioPackets = await page.evaluate(async () => [...(await peer.getStats()).values()]
@@ -189,6 +198,7 @@ try {
   await page.waitForFunction(() => peer?.connectionState === 'connected');
   await page.waitForFunction(() => latencyState?.videoHintSuppressed === true);
   assert.equal(await page.locator('#lowLatency').isChecked(), false);
+  await page.locator('#menuToggle').click();
   await page.locator('#disconnect').click();
   await page.waitForTimeout(300);
   const ipad = await browser.newPage({ ignoreHTTPSErrors: true });
@@ -202,7 +212,15 @@ try {
   await ipad.waitForFunction(() => peer?.connectionState === 'connected');
   await ipad.waitForFunction(() => latencyState?.videoHintSuppressed === true);
   await ipad.waitForFunction(() => latencyState?.audioQueueLimitMs === 120);
-  await ipad.locator('#lowLatency').check();
+  await ipad.locator('#menuToggle').click();
+  await ipad.locator('#lowLatency').click();
+  const videoControlSupported = await ipad.evaluate(() => supportsReceiverLatency());
+  assert.equal(await ipad.locator('#lowLatency').isChecked(), videoControlSupported,
+    'Video control may run without sound only when the receiver supports it');
+  if (!videoControlSupported) {
+    await ipad.evaluate(() => { audioPlaybackState = '播放中'; });
+    await ipad.locator('#lowLatency').check();
+  }
   await ipad.waitForFunction(() => latencyState?.enabled === true);
   assert.deepEqual(await ipad.evaluate(() => ({ video: latencyState.videoHintNegotiated,
     audio: latencyState.audioQueueLimitMs, applied: latencyState.applied })),

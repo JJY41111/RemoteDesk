@@ -3,9 +3,16 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#101c2b">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="RemoteDesk">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>RemoteDesk 接收端</title>
-  <link rel="stylesheet" href="/style.css">
-  <script src="/app.js" defer></script>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" sizes="180x180" href="/icons/remotedesk-180.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="/icons/remotedesk-192.png">
+  <link rel="stylesheet" href="/style.css?v=2026-10-04.5">
+  <script src="/app.js?v=2026-10-04.5" defer></script>
 </head>
 <body>
   <header>
@@ -20,52 +27,104 @@
         <button id="connect">連線</button>
       </div>
       <p>第一次開啟時，Safari 可能會要求確認這台電腦的本機 HTTPS 憑證。</p>
+      <p>想以獨立 App 開啟：在 iPad Safari 按分享 →「加入主畫面」，之後從主畫面圖示啟動。</p>
       <label for="syncMode">播放方式</label>
       <select id="syncMode">
         <option value="interactive">即時操作：畫面優先，避免等待延遲的聲音</option>
         <option value="av-sync">影片觀賞：優先影音同步，可能增加操作延遲</option>
       </select>
-      <label for="videoMode">畫面清晰度</label>
+      <label for="videoMode">畫面模式</label>
       <select id="videoMode">
         <option value="1080p">1080p：遊戲優先</option>
+        <option value="game1080">1080p60：遊戲穩定傳輸（新版驗收）</option>
+        <option value="mobile1080">1080p60：跨區較低流量測試（5 Mbps）</option>
+        <option value="stable1080">1080p：重負載測試（30 FPS）</option>
         <option value="native">原生 2560×1440：文字清晰，負載較高</option>
       </select>
+      <p>「跨區較低流量」維持 1080p60，降低編碼目標流量，快速畫面可能較模糊。「重負載測試」維持 1080p，將串流目標降至 30 FPS。兩者請和預設模式測同一場景。</p>
     </section>
     <section id="session" hidden>
+      <nav id="sessionBar" aria-label="遠端工具列">
+        <button id="menuToggle" aria-expanded="false" aria-controls="controlsPanel">☰ 功能</button>
+        <span id="viewHint" role="status">遠端桌面</span>
+      </nav>
       <div id="screenViewport"><video id="screen" autoplay playsinline muted tabindex="0"></video></div>
       <audio id="sound" playsinline></audio>
+      <aside id="controlsPanel" aria-label="遠端功能" hidden>
+      <div class="panel-heading"><strong>遠端功能</strong><button id="closeMenu" aria-label="關閉功能選單">✕</button></div>
+      <div id="connectionStatus" role="status"></div>
+      <div class="stream-options">
+        <div id="syncStatus" role="status"></div>
+        <div id="latencyStatus" role="status">等待主機回報接收端設定。</div>
+        <small id="versionStatus">接收端版本 2026-10-04.5</small>
+      </div>
       <div class="toolbar">
+        <label>畫面緩衝目標
+          <select id="receiverTarget" disabled aria-label="畫面接收緩衝目標">
+            <option value="80">80 ms：低延遲測試</option>
+            <option value="120">120 ms：較多恢復餘裕</option>
+            <option value="160">160 ms：網路波動測試</option>
+          </select>
+        </label>
         <button id="play">播放畫面</button>
+        <button id="reloadClient">重新載入新版</button>
         <button id="zoomScreen" aria-pressed="false">放大文字 150%</button>
         <button id="panScreen" aria-pressed="false" hidden>移動畫面</button>
         <button id="playAudio" disabled>播放聲音</button>
         <label><input type="checkbox" id="control"> 啟用本次遠端操作</label>
         <button id="keyboard">開啟觸控鍵盤</button>
         <button id="focusKeys">鍵盤控制</button>
+        <button id="gameMouse" aria-pressed="false">遊戲滑鼠</button>
         <button id="remoteRefresh">遠端 F5</button>
         <button id="toggleGamepad" aria-pressed="false">啟用虛擬手把</button>
-        <label><input type="checkbox" id="lowLatency" disabled> 縮短主機音訊排隊（進階）</label>
+        <label><input type="checkbox" id="lowLatency" disabled> <span id="lowLatencyLabel">縮短排隊延遲（僅主機音訊）</span></label>
         <button id="remoteWin">遠端 Win</button>
         <button id="exportMetrics">下載測試紀錄</button>
         <button id="disconnect">斷線</button>
       </div>
-      <textarea id="typing" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="在這裡輸入文字，再傳給遠端電腦"></textarea>
-      <textarea id="keyCapture" inputmode="none" autocomplete="off" autocapitalize="off"
-        autocorrect="off" spellcheck="false" aria-label="遠端實體鍵盤輸入區"
-        placeholder="遠端實體鍵盤：點這裡，再按 iPad 外接鍵盤。此區會顯示 Safari 是否收到按鍵。"></textarea>
-      <div id="inputStatus" role="status">鍵盤操作：按「鍵盤控制」會啟用本次遠端操作，再按 iPad 實體鍵盤。</div>
+      <div class="transfer-grid">
+        <section class="transfer-card" aria-label="剪貼簿傳送">
+          <h2>剪貼簿</h2>
+          <p>在 iPad 貼上文字或圖片，送出後可在 Windows 按 Ctrl+V。</p>
+          <textarea id="clipboardText" autocomplete="off" autocapitalize="off" spellcheck="false"
+            placeholder="在這裡貼上文字或圖片"></textarea>
+          <div id="clipboardPreview" hidden></div>
+          <div class="transfer-actions">
+            <button id="readClipboard">貼上 iPad 剪貼簿</button>
+            <label class="file-button">選擇圖片<input id="clipboardImage" type="file" accept="image/png,image/jpeg,image/*" hidden></label>
+            <button id="sendClipboard">送至 Windows 剪貼簿</button>
+          </div>
+          <div id="clipboardStatus" role="status"></div>
+        </section>
+        <section class="transfer-card" aria-label="檔案傳輸">
+          <h2>檔案傳輸</h2>
+          <p>可選文件、程式碼、壓縮檔、照片或影片；不限制副檔名。</p>
+          <input id="uploadFiles" type="file" multiple>
+          <button id="sendFiles">傳到電腦</button>
+          <div id="uploadStatus" role="status">儲存至 C:\Users\johnl\Desktop\ipad傳輸</div>
+        </section>
+      </div>
+      <details id="touchKeyboardBox"><summary>觸控鍵盤輸入</summary>
+        <textarea id="typing" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="在這裡輸入文字，再傳給遠端電腦"></textarea>
+      </details>
+      <details><summary>實體鍵盤診斷</summary>
+        <textarea id="keyCapture" inputmode="none" readonly autocomplete="off" autocapitalize="off"
+          autocorrect="off" spellcheck="false" aria-label="遠端實體鍵盤輸入區"
+          placeholder="點這裡，再按 iPad 外接鍵盤；此區會顯示 Safari 是否收到按鍵。"></textarea>
+      </details>
+      <div id="inputStatus" role="status">實體鍵盤：按「鍵盤控制」即可聚焦遠端畫面；觸控打字請按「開啟觸控鍵盤」。</div>
+      <div id="mouseStatus" role="status">桌面滑鼠：點擊位置與 Windows 游標對齊。</div>
       <p>按「遠端 Win」可開啟 Windows 開始功能表。</p>
       <div id="inputMetrics">鍵盤診斷：等待連線</div>
       <div id="gamepadStatus" role="status">iPad 手把：等待瀏覽器偵測。</div>
       <div id="gamepadHostStatus" role="status">Windows 手把：等待主機連線。</div>
-      <div id="latencyStatus" role="status">主機音訊排隊：一般（120 ms）。</div>
-      <div id="syncStatus" role="status"></div>
       <div id="displayStatus" role="status">等待畫面解析度</div>
       <div id="metrics">等待畫面</div>
       <div id="videoStatus" role="status"></div>
       <div id="audioStatus" role="status">音訊尚未連線</div>
       <p>觸控可當滑鼠。鍵盤玩遊戲請按「鍵盤控制」，再用遊戲內的鍵位設定。
       手把走獨立路徑，傳送按鈕、搖桿與扳機狀態；按「啟用虛擬手把」後由主機建立虛擬 Xbox 手把。</p>
+      </aside>
     </section>
   </main>
 </body>
