@@ -27,15 +27,15 @@ function Get-RemoteDeskAddresses {
     }
 }
 
-function New-RemoteDeskConfig($Root, $Mode, $HostAddress, $Port=0, $TcpPort=0) {
+function New-RemoteDeskConfig($Root, $Mode, $HostAddress, $Port=0, $TcpPort=0, $Client='ipad') {
     $parsedAddress = $null
-    if ($Mode -notin @('lan','wan') -or ![Net.IPAddress]::TryParse($HostAddress, [ref]$parsedAddress) -or
+    if ($Client -notin @('ipad','pc') -or $Mode -notin @('lan','wan') -or ![Net.IPAddress]::TryParse($HostAddress, [ref]$parsedAddress) -or
         $parsedAddress.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork) { throw '請選擇有效的本機 IPv4。' }
-    if (!$Port) { $Port = if ($Mode -eq 'wan') { 9443 } else { 8443 } }
-    if (!$TcpPort) { $TcpPort = if ($Mode -eq 'wan') { 55445 } else { 5000 } }
-    $private = Join-Path $Root 'bridge\private'
+    if (!$Port) { $Port = if ($Client -eq 'pc') {if ($Mode -eq 'wan') {10443} else {10433}} elseif ($Mode -eq 'wan') { 9443 } else { 8443 } }
+    if (!$TcpPort) { $TcpPort = if ($Client -eq 'pc') {if ($Mode -eq 'wan') {55447} else {55446}} elseif ($Mode -eq 'wan') { 55445 } else { 5000 } }
+    $private = Join-Path $Root $(if ($Client -eq 'pc') {'bridge\private\pc'} else {'bridge\private'})
     $prefix = if ($Mode -eq 'wan') { 'tailnet' } else { 'lan' }
-    [pscustomobject]@{ Root=$Root; Mode=$Mode; HostAddress=$HostAddress; Port=$Port; TcpPort=$TcpPort;
+    [pscustomobject]@{ Root=$Root; Mode=$Mode; Client=$Client; Private=$private; HostAddress=$HostAddress; Port=$Port; TcpPort=$TcpPort;
         Url="https://${HostAddress}:$Port/"; Stdout=(Join-Path $private "$prefix-current.stdout.log");
         Stderr=(Join-Path $private "$prefix-current.stderr.log");
         Metadata=(Join-Path $private "launcher-$Mode.json") }
@@ -61,7 +61,7 @@ function Get-RemoteDeskState($Config) {
     $codeMatches = [regex]::Matches($log, 'One-time pairing code for this server run: (\d{8})')
     $code = if ($codeMatches.Count) { $codeMatches[$codeMatches.Count-1].Groups[1].Value } else { '' }
     $verifiedLocal = $false
-    $stateFile = Join-Path $Config.Root "bridge\private\pairing-state-$($Config.Port).json"
+    $stateFile = Join-Path $Config.Private "pairing-state-$($Config.Port).json"
     if (Test-Path -LiteralPath $stateFile) {
         try {
             $current = (Read-RemoteDeskLog $stateFile 8192) | ConvertFrom-Json
@@ -102,6 +102,12 @@ function Start-RemoteDeskService($Config) {
     $server = Join-Path $Config.Root 'bridge\server.mjs'
     $arguments = @(('"' + $server + '"'), "--host=$($Config.HostAddress)", "--port=$($Config.Port)",
         "--tcp-port=$($Config.TcpPort)", '--enable-input', '--audio', '--display=0:0', '--gamepad=viiper')
+    $hostService = Get-Service RemoteDeskHost -ErrorAction SilentlyContinue
+    if ($hostService) {
+        if ($hostService.Status -ne 'Running') { throw 'RemoteDeskHost is installed but stopped. Start it or remove it before starting RemoteDesk.' }
+        $arguments += '--system-host'
+    }
+    if ($Config.Client -eq 'pc') { $arguments += '--client=pc' }
     if ($Config.Mode -eq 'wan') { $arguments += '--tailnet' }
     $process = Start-Process -FilePath $node -ArgumentList $arguments -WorkingDirectory (Join-Path $Config.Root 'bridge') -WindowStyle Hidden -PassThru -RedirectStandardOutput $Config.Stdout -RedirectStandardError $Config.Stderr
     @{ ProcessId=$process.Id; StartTicks=$process.StartTime.ToUniversalTime().Ticks; Root=$Config.Root } |
@@ -137,7 +143,7 @@ function Stop-RemoteDeskService($Config) {
     # PID, process start time, absolute script path and root were checked above.
     # Let the server's normal session cleanup detach inputs before stopping.
     $connected = @(Get-NetTCPConnection -State Established -LocalPort $Config.TcpPort -ErrorAction SilentlyContinue)
-    if ($connected.Count) { throw 'iPad仍在連線，請先按遠端「斷線」，再停止服務。' }
+    if ($connected.Count) { throw '接收端仍在連線，請先按遠端「斷線」，再停止服務。' }
     Stop-Process -Id $state.ProcessId -ErrorAction Stop
     Wait-Process -Id $state.ProcessId -Timeout 5 -ErrorAction SilentlyContinue
 }

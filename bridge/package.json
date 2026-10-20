@@ -12,6 +12,9 @@
     "test": "node --test test/*.test.mjs",
     "test:browser": "node test/browser.mjs",
     "test:ui": "node test/ui.mjs",
+    "test:pc": "node test/pc-ui.mjs",
+    "test:pc-isolation": "node test/pc-isolation.mjs",
+    "test:pc-native": "node test/pc-native.mjs",
     "test:latency": "node test/latency-browser.mjs",
     "test:audio": "node test/audio.mjs"
   },

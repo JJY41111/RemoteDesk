@@ -1,6 +1,47 @@
 const $ = id => document.getElementById(id);
-const clientVersion = '2026-10-04.5';
+const pcClient = new URLSearchParams(location.search).get('client') === 'pc';
+const transferFolderName = pcClient ? 'pc傳輸' : 'ipad傳輸';
+let hostCapturePaused = false, hostInputBlocked = false, privilegedHost = false;
+function setHostPrivilege(enabled) {
+  privilegedHost = enabled === true;
+  $('systemHostStatus').textContent = enabled === null ? '主機權限：等待連線。' :
+    privilegedHost ? '主機權限：高權限助手已連接。' : '主機權限：一般模式（無法遠端操作 UAC 安全桌面）。';
+}
+function updateHostNotice() {
+  const text = hostCapturePaused && privilegedHost ? '高權限主機正在重新連接桌面，請稍候；若持續無畫面，請下載測試紀錄。' : hostCapturePaused ? '主機桌面暫時無法擷取，可能正在顯示 Windows 權限提示。此版本無法操作安全桌面；請在主機處理提示，返回桌面後會嘗試恢復。' :
+    hostInputBlocked ? 'Windows 拒絕遠端輸入，可能是權限提示或較高權限的程式。請回到一般桌面後重試；橋接已連線不代表輸入已成功執行。' : '';
+  $('hostNotice').textContent = text;
+  $('hostNotice').hidden = !text;
+}
+document.body.classList.toggle('pc-client', pcClient);
+$('pcGuide').hidden = !pcClient;
+$('pcInputGuide').hidden = !pcClient;
+$('pcFullscreen').hidden = !pcClient;
+if (pcClient) {
+  $('keyboard').textContent = '中文／文字輸入';
+  $('gamepadStatus').textContent = '手把：等待瀏覽器偵測。';
+  $('uploadStatus').textContent = '儲存至主機的「pc傳輸」資料夾';
+  $('keyCapture').placeholder = '點這裡測試實體鍵盤事件；遊戲請聚焦遠端畫面。';
+}
+$('pcFullscreen').onclick = async () => {
+  try {
+    if (document.fullscreenElement) await document.exitFullscreen();
+    else await $('session').requestFullscreen();
+    screen.focus({ preventScroll: true });
+  } catch {
+    $('viewHint').textContent = '瀏覽器未允許全螢幕，請使用瀏覽器的全螢幕功能。';
+  }
+};
+document.addEventListener('fullscreenchange', () => {
+  const enabled = Boolean(document.fullscreenElement);
+  $('pcFullscreen').textContent = enabled ? '離開全螢幕' : '全螢幕';
+  $('pcFullscreen').setAttribute('aria-pressed', String(enabled));
+  releaseInputs();
+});
+const clientVersion = '2026-10-17.1';
 let hostVersion = '';
+let hostCommit = '';
+let rttControlMode = '';
 function updateVersionStatus() {
   $('versionStatus').textContent = `接收端 ${clientVersion}；主機 ${hostVersion || '等待回報'}` +
     (hostVersion && hostVersion !== clientVersion ? '。版本不同，請更新主機並重新載入頁面。' : '');
@@ -12,16 +53,29 @@ $('reloadClient').onclick = () => {
 };
 // Keep the user's resolution choice across PWA reloads/reconnections.
 // Storage may be unavailable in private browsing; the existing default stays valid.
-const videoModePreferenceKey = 'remotedesk.videoMode';
+const videoModePreferenceKey = pcClient ? 'remotedesk.pc.videoMode' : 'remotedesk.videoMode';
 try {
   const saved = localStorage.getItem(videoModePreferenceKey);
   if ([...$('videoMode').options].some(option => option.value === saved)) $('videoMode').value = saved;
+  else if (saved !== null) localStorage.setItem(videoModePreferenceKey, $('videoMode').value);
 } catch {}
 $('videoMode').addEventListener('change', () => {
   try { localStorage.setItem(videoModePreferenceKey, $('videoMode').value); } catch {}
 });
 const status = text => { $('status').textContent = text; };
 const sendSignal = message => socket?.readyState === WebSocket.OPEN && socket.send(JSON.stringify(message));
+const rttPreferenceKey = pcClient ? 'remotedesk.pc.rttBackoff' : 'remotedesk.rttBackoff';
+try { $('rttBackoff').checked = localStorage.getItem(rttPreferenceKey) !== 'false'; } catch {}
+function showRttBackoffState() {
+  $('rttBackoffStatus').textContent = $('rttBackoff').checked ?
+    'RTT 與失包都會觸發降載（預設）。' : '只依失包降載；RTT 不會限制流量回升。';
+}
+$('rttBackoff').onchange = () => {
+  try { localStorage.setItem(rttPreferenceKey, String($('rttBackoff').checked)); } catch {}
+  showRttBackoffState();
+  sendSignal({ type: 'set-rtt-backoff', enabled: $('rttBackoff').checked });
+};
+showRttBackoffState();
 let socket, peer, controlChannel, gamepadChannel, pointerChannel;
 let pointerFast = false, pointerSequence = 0;
 let gameMouse = false, mouseModeReady = false, relativePosition = null;
@@ -147,7 +201,7 @@ function updateLatencyStatus() {
   } else if (requestedReceiverLatency.supported) {
     $('latencyStatus').textContent = `接收端維持瀏覽器預設；${hostAudio}。`;
   } else {
-    $('latencyStatus').textContent = `${hostAudio}；此 Safari 未提供影音接收緩衝控制，勾選不會改善畫面延遲。`;
+    $('latencyStatus').textContent = `${hostAudio}；此瀏覽器未提供影音接收緩衝控制，勾選不會改善畫面延遲。`;
   }
   if (latencyRollbackNotice) $('latencyStatus').textContent += ` ${latencyRollbackNotice}`;
   if (receiverLatencyErrors.length) $('latencyStatus').textContent += ` 設定失敗：${receiverLatencyErrors.join('、')}，不能視為已套用。`;
@@ -162,7 +216,9 @@ function receiverTargetFor(kind, metrics, oldTarget, base = 80) {
   const desired = Math.ceil(Math.max(kind === 'video' ? base : 100,
     floor + 20, rtt / 2 + (kind === 'video' ? 40 : 60)) / 20) * 20;
   const reported = metrics[`${kind}TargetMs`];
-  const measured = Number.isFinite(reported) ? reported : metrics[`${kind}BufferMs`];
+  const actual = metrics[`${kind}BufferMs`];
+  const valid = [reported, actual].filter(value => Number.isFinite(value) && value >= 0);
+  const measured = valid.length ? Math.max(...valid) : NaN;
   if (oldTarget !== null) return desired;
   // Only shorten an excessive queue. Enabling must not inflate an already
   // low browser default; actual buffer stats also work when target stats lack.
@@ -229,6 +285,37 @@ function releaseInputs() {
   for (const button of downButtons) sendInputRaw({ type: 'button', button, down: false });
   downKeys.clear(); downButtons.clear();
 }
+function readNetworkFeedback(stats) {
+  const values = [...stats.values()];
+  const selectedId = values.find(item => item.type === 'transport' &&
+    item.selectedCandidatePairId)?.selectedCandidatePairId;
+  const pairs = values.filter(item => item.type === 'candidate-pair' && item.state === 'succeeded');
+  const selected = selectedId ? pairs.find(item => item.id === selectedId) :
+    pairs.find(item => item.nominated) || (pairs.length === 1 ? pairs[0] : null);
+  const rttMs = selected && Number.isFinite(selected.currentRoundTripTime) &&
+    selected.currentRoundTripTime >= 0 ? Math.round(selected.currentRoundTripTime * 1000) : null;
+  const video = values.find(item => item.type === 'inbound-rtp' &&
+    (item.kind || item.mediaType) === 'video');
+  if (!video || ![video.packetsReceived, video.packetsLost, video.nackCount].every(Number.isSafeInteger))
+    return { rttMs, report: null };
+  return { rttMs, report: { type: 'network-feedback', received: video.packetsReceived,
+    lost: Math.max(0, video.packetsLost), nacks: video.nackCount, rttMs } };
+}
+function showCapsLockState(capsLock) {
+  $('capsLockStatus').textContent = typeof capsLock === 'boolean' ?
+    `Windows 大寫：${capsLock ? '開' : '關'}（Caps Lock）；在遠端畫面按 Caps Lock 可切換。` :
+    'Windows 大寫：等待主機回報；啟用遠端操作後顯示。';
+}
+$('remoteCapsLock').onclick = () => {
+  if (!controlReady || !$('control').checked) {
+    $('inputStatus').textContent = '請先啟用本次遠端操作，再切換主機大寫。';
+    return;
+  }
+  // One complete key stroke, with the confirmed host state reported separately.
+  updateKey('CapsLock', true);
+  updateKey('CapsLock', false);
+  screen.focus({ preventScroll: true });
+};
 function updateKey(code, down) {
   if (down && (!controlReady || !$('control').checked)) return;
   if (down === downKeys.has(code)) return;
@@ -236,6 +323,9 @@ function updateKey(code, down) {
   if (down) downKeys.add(code); else downKeys.delete(code);
 }
 function stop(reason = '已斷線') {
+  hostCapturePaused = false;hostInputBlocked = false;setHostPrivilege(null);updateHostNotice();
+  if (pcClient && document.fullscreenElement) void document.exitFullscreen().catch(() => {});
+  showCapsLockState(null);
   activeUpload?.abort(); activeUpload = null;
   transferToken = null;
   releaseInputs();
@@ -252,6 +342,8 @@ function stop(reason = '已斷線') {
   $('control').checked = false;
   canControl = false;
   controlReady = false;
+  $('rttBackoff').disabled = false;
+  showRttBackoffState();
   gamepadRequested = false;
   gamepadActive = false;
   updateGamepadButton();
@@ -288,11 +380,28 @@ function stop(reason = '已斷線') {
   status(reason);
 }
 async function handleSignal(message) {
+  if (message.type === 'rtt-backoff-state') {
+    rttControlMode = message.rttControlMode || '';
+    $('rttBackoff').checked = message.enabled === true;
+    showRttBackoffState();
+  }
   if (message.type === 'paired') {
+    $('rttBackoff').disabled = message.rttBackoffControl !== true || !message.wanRateControl;
+    if (message.rttBackoffControl === true && message.wanRateControl) {
+      $('rttBackoff').checked = message.rttBackoffEnabled !== false;
+      showRttBackoffState();
+    } else $('rttBackoffStatus').textContent = message.rttBackoffControl === true ?
+      '目前模式未使用跨網路降載控制。' : '請更新並重新啟動主機，才能切換 RTT 降載。';
+    if (message.rttControlLockedOff) {
+      $('rttBackoff').checked = false;
+      $('rttBackoff').disabled = true;
+      $('rttBackoffStatus').textContent = '主機 RTT_CONTROL=off：只依失包降載。';
+    }
+    setHostPrivilege(message.systemHost === true);
     transferToken = typeof message.transferToken === 'string' ? message.transferToken : null;
     $('clipboardStatus').textContent = transferToken ? '可傳送文字或圖片。' : '主機未提供剪貼簿功能。';
     $('uploadStatus').textContent = transferToken ?
-      '儲存至主機的「ipad傳輸」資料夾' : '主機未提供檔案傳輸功能。';
+      `儲存至主機的「${transferFolderName}」資料夾` : '主機未提供檔案傳輸功能。';
     // Each server session starts with remote input disabled. Never carry an
     // old session's opt-in or acknowledgement into a fresh pairing.
     controlReady = false;
@@ -315,14 +424,6 @@ async function handleSignal(message) {
       message.syncMode === 'interactive' ?
       '畫面低延遲播放已啟用：影像不等待音訊追齊；網路波動時聲畫可能暫時不同步。' :
       '影音同步：畫面可能等待音訊；要優先操作反應，斷線後選「即時操作」。';
-    if (activeVideoMode === 'cpu1080') $('syncStatus').textContent +=
-      ' 目前以另一種主機轉色方式測試；請和預設 1080p 比較同一場景。';
-    if (activeVideoMode === 'stable1080') $('syncStatus').textContent +=
-      ' 重負載測試：維持 1080p、串流目標 30 FPS；請和預設模式比較同一場景。';
-    if (activeVideoMode === 'mobile1080') $('syncStatus').textContent +=
-      ' 較低流量測試：維持 1080p60、編碼目標 5 Mbps；動態清晰度可能下降。';
-    if (activeVideoMode === 'game1080') $('syncStatus').textContent +=
-      ' 遊戲穩定傳輸：1080p60；減少固定恢復影格，停畫時主動要求恢復。';
     canControl = message.inputEnabled;
     canGamepad = message.gamepadEnabled;
     gamepadRequested = false;
@@ -360,6 +461,8 @@ async function handleSignal(message) {
       message.latencyControlVersion >= 4;
     videoRecoveryAvailable = message.videoRecovery === true;
     hostVersion = message.hostVersion || '';
+    hostCommit = message.hostCommit || '';
+    rttControlMode = message.rttControlMode || '';
     updateVersionStatus();
     gamepadRedundant = 0; gamepadAckRttMs = null; gamepadLastAckAt = 0;
     $('lowLatency').disabled = !latencyControlAvailable;
@@ -412,11 +515,17 @@ async function handleSignal(message) {
     else status(waitingForInput ? '正在啟動 Windows 輸入程式' :
       '遠端操作已停止，按鍵與滑鼠已釋放');
     syncNativeControls();
+  } else if (message.type === 'capture-state') {
+    hostCapturePaused = message.paused === true;updateHostNotice();
+  } else if (message.type === 'input-access-state') {
+    hostInputBlocked = message.blocked === true;updateHostNotice();
+  } else if (message.type === 'keyboard-state') {
+    showCapsLockState(message.capsLock);
   } else if (message.type === 'input-ack') {
     keyAcks++;
     $('inputStatus').textContent = message.accepted ?
       `主機橋接已收到：${message.code} ${message.down ? '按下' : '放開'}` :
-      `Safari 送出 ${message.code}，但主機不支援這個鍵碼`;
+      `瀏覽器送出 ${message.code}，但主機不支援這個鍵碼`;
   } else if (message.type === 'gamepad-status') {
     gamepadHostStatus = message.text;
     $('gamepadHostStatus').textContent = `Windows 手把：${message.text}`;
@@ -513,8 +622,10 @@ $('connect').onclick = () => {
   const connectingSocket = socket;
   let signalQueue = Promise.resolve();
   socket.onopen = () => {
-    sendSignal({ type: 'pair', code, clientVersion,
+    if (socket !== connectingSocket) return;
+    sendSignal({ type: 'pair', code, clientVersion, clientType: pcClient ? 'pc' : 'ipad',
       syncMode: $('syncMode').value, audioOnDemand: true,
+      rttBackoffEnabled: $('rttBackoff').checked,
       videoMode: $('videoMode').value });
   };
   socket.onmessage = event => {
@@ -526,11 +637,16 @@ $('connect').onclick = () => {
       if (socket === connectingSocket) status(`連線錯誤：${error.message}`);
     });
   };
-  socket.onerror = () => status('無法連線到電腦');
+  socket.onerror = () => { if (socket === connectingSocket) status('無法連線到電腦'); };
   socket.onclose = event => {
     if (socket !== connectingSocket) return;
-    $('connect').disabled = false;
-    if (peer || !$('session').hidden) stop(`已斷線：${event.reason || '連線中斷'}；請重新連線`);
+    const reasons = {
+      'wrong pairing code': '配對碼不正確，請確認主機顯示的 8 位數配對碼',
+      'pairing temporarily blocked': '配對失敗次數過多，請稍後再試',
+      'pairing timeout': '配對逾時，請重新連線',
+      'wrong client service': '連線入口不符，請使用此裝置專用的網址'
+    };
+    stop(reasons[event.reason] || `已斷線：${event.reason || '連線中斷'}；請重新連線`);
   };
 };
 $('disconnect').onclick = () => stop();
@@ -768,7 +884,7 @@ $('sendFiles').onclick = async () => {
   try {
     for (const [index, file] of files.entries()) {
       const result = await uploadOne(file, index + 1, files.length);
-      $('uploadStatus').textContent = `已接收 ${index + 1}/${files.length}：${result.name}（${result.bytes} 位元組）；存於主機的「ipad傳輸」資料夾`;
+      $('uploadStatus').textContent = `已接收 ${index + 1}/${files.length}：${result.name}（${result.bytes} 位元組）；存於主機的「${transferFolderName}」資料夾`;
     }
     $('uploadFiles').value = '';
   } catch (error) { $('uploadStatus').textContent = `傳輸失敗：${error.message}`; }
@@ -869,10 +985,12 @@ $('remoteWin').onclick = () => {
   }
 };
 $('typing').oninput = event => {
+  if (pcClient && event.isComposing) return;
   const value = event.target.value;
   if (value) sendInput({ type: 'text', text: value.slice(-32) });
   event.target.value = '';
 };
+if (pcClient) $('typing').oncompositionend = event => $('typing').oninput(event);
 
 function pointerPosition(event) {
   const video = $('screen');
@@ -904,6 +1022,7 @@ function updateMouseStatus() {
     nativeMouseLocked ? '原生遊戲滑鼠：游標已隱藏並鎖定，可連續轉向；Esc 或 App「釋放」退出。' :
     nativeMouseBridge() ? '原生遊戲滑鼠：等待 iPad 確認游標鎖定；請接上滑鼠並使用完整螢幕。' :
     document.pointerLockElement === screen ? '遊戲滑鼠：已鎖定游標，可連續轉向；Esc 釋放游標。' :
+    pcClient ? '遊戲滑鼠：點擊遠端畫面以鎖定游標；Esc 釋放。未成功鎖定時，連續轉向會受畫面邊界限制。' :
     '遊戲滑鼠：移動滑鼠或拖曳畫面轉向；碰到 iPad 畫面邊緣需移回再繼續。輕點為左鍵。';
 }
 function setGameMouse(enabled) {
@@ -923,7 +1042,12 @@ function setGameMouse(enabled) {
 async function lockGameMouse() {
   if (nativeMouseBridge()) return;
   if (typeof screen.requestPointerLock !== 'function') return;
-  try { await screen.requestPointerLock(); }
+  try {
+    if (pcClient) {
+      try { await screen.requestPointerLock({ unadjustedMovement: true }); }
+      catch { await screen.requestPointerLock(); }
+    } else await screen.requestPointerLock();
+  }
   catch { updateMouseStatus(); }
 }
 $('gameMouse').onclick = () => {
@@ -1108,6 +1232,7 @@ function keyCodeFromEvent(event) {
   return { Esc: 'Escape' }[key] || key;
 }
 document.onkeydown = event => {
+  if (pcClient && event.isComposing) return;
   const code = keyCodeFromEvent(event);
   if (nativeKeyboardActive()) { event.preventDefault(); return; }
   const typing = document.activeElement === $('typing') ||
@@ -1131,7 +1256,7 @@ document.onkeydown = event => {
   const functionKey = /^F(?:[1-9]|1[0-2])$/.test(code);
   if (capture) keyEventsSeen++;
   if (capture) {
-    $('inputStatus').textContent = `Safari 收到：key=${event.key || '空'}，code=${event.code || '空'}；` +
+    $('inputStatus').textContent = `瀏覽器收到：key=${event.key || '空'}，code=${event.code || '空'}；` +
       `${controlReady && $('control').checked ? '準備轉送' : '遠端操作尚未啟用'}`;
   }
   if (!controlReady || !$('control').checked) return;
@@ -1154,7 +1279,7 @@ $('keyCapture').oninput = event => {
   const value = event.target.value;
   event.target.value = '';
   if (value) $('inputStatus').textContent =
-    `Safari 只送來文字「${value.slice(-8)}」，沒有可持續按住的按鍵事件；請用實體鍵盤。`;
+    `瀏覽器只送來文字「${value.slice(-8)}」，沒有可持續按住的按鍵事件；請用實體鍵盤。`;
 };
 
 let gamepadHostStatus = '';
@@ -1211,7 +1336,7 @@ function reportGamepad(message) {
   $('gamepadStatus').textContent = message;
 }
 window.addEventListener('gamepadconnected', () => {
-  reportGamepad('iPad 瀏覽器已偵測手把。');
+  reportGamepad('瀏覽器已偵測手把。');
 });
 window.addEventListener('gamepaddisconnected', () => {
   releaseGamepad();
@@ -1253,7 +1378,7 @@ function pollGamepad() {
       .filter(index => index !== null);
     const buttonLabels = pad.mapping === 'standard' ?
       pressed.map(index => standardButtonNames[index] || String(index)) : pressed;
-    reportGamepad(`iPad 手把已偵測（${pad.mapping || '非標準'}）；按鈕 ${buttonLabels.join(', ') || '無'}；` +
+    reportGamepad(`手把已偵測（${pad.mapping || '非標準'}）；按鈕 ${buttonLabels.join(', ') || '無'}；` +
       `${pad.mapping !== 'standard' ? '瀏覽器未提供標準 Xbox 按鈕順序' :
         gamepadActive ? '傳送至虛擬 Xbox 手把' :
           gamepadRequested ? '等待主機建立虛擬手把' :
@@ -1267,7 +1392,7 @@ function pollGamepad() {
 // Sampling must not wait for a video paint; Safari may present frames unevenly.
 function gamepadTick() {
   const now = performance.now();
-  if ((videoRecoveryAvailable || activeVideoMode === 'game1080') && peer?.connectionState === 'connected' &&
+  if (!hostCapturePaused && (videoRecoveryAvailable || activeVideoMode === 'game1080') && peer?.connectionState === 'connected' &&
       document.visibilityState === 'visible' && !screen.paused &&
       (lastFrameTime ? now - lastFrameTime >= 250 : serverStats?.sent >= 60) &&
       (!lastRecoveryRequestedAt || now - lastRecoveryRequestedAt >= 1000) && worstUiTimerLag < 100) {
@@ -1331,7 +1456,7 @@ setInterval(() => {
   if (!$('session').hidden) $('inputMetrics').textContent =
     `鍵盤診斷：操作${controlReady && $('control').checked ? '已啟用' : '未啟用'}；` +
     `遠端畫面${document.activeElement === screen ? '已聚焦' : '未聚焦'}；` +
-    `Safari 收到 ${keyEventsSeen} 次、轉送 ${keyEventsSent} 次、主機確認 ${keyAcks} 次；` +
+    `瀏覽器收到 ${keyEventsSeen} 次、轉送 ${keyEventsSent} 次、主機確認 ${keyAcks} 次；` +
     `鍵鼠走${pointerFast ? '控制連線' : '資料通道'}，待送 ${pointerFast ?
       (socket?.bufferedAmount ?? '未知') : (controlChannel?.bufferedAmount ?? '未知')} 位元組` +
       (gamepadActive ? `；手把通道往返 ${gamepadAckRttMs ?? '等待回覆'} ms（不含遊戲反應）` : '');
@@ -1374,6 +1499,7 @@ setInterval(() => {
     pointerChannel?.bufferedAmount ?? '', uiTimerLag,
     serverStats?.videoSendMaxMs ?? '', serverStats?.videoInputKbps ?? '',
     serverStats?.wanTargetKbps ?? '', serverStats?.wanLossPercent ?? '',
+    typeof serverStats?.wanRttBackoffEnabled === 'boolean' ? (serverStats.wanRttBackoffEnabled ? 1 : 0) : '',
     serverStats?.videoMaxFrameBytes ?? '', serverStats?.videoKeyframes ?? '',
     serverStats?.videoRecoveryRequests ?? '',
     receiverStatsAt ? Math.round(now - receiverStatsAt) : '',
@@ -1388,7 +1514,8 @@ setInterval(() => {
     receiverRollbackCount, receiverSafetyBlocked ? 1 : 0,
     receiverLatencyErrors.length, gamepadRedundant, gamepadAckRttMs ?? '',
     gamepadLastAckAt ? Math.round(now - gamepadLastAckAt) : '',
-    clientVersion, hostVersion]);
+    clientVersion, hostVersion, hostCapturePaused ? 1 : 0, hostInputBlocked ? 1 : 0,
+    rttControlMode, hostCommit]);
   lastMetric = now; lastPainted = painted; lastQualityCount = frameCount;
   worstGap = 0; worstUiTimerLag = 0;
 }, 1000);
@@ -1400,10 +1527,11 @@ setInterval(async () => {
     const stats = await currentPeer.getStats();
     if (peer !== currentPeer) return;
     receiverStatsAt = performance.now();
+    // Resolve the selected route before iterating media stats; Map order is not fixed.
+    const feedback = readNetworkFeedback(stats);
+    receiverMetrics.rttMs = feedback.rttMs;
+    if (feedback.report) sendSignal(feedback.report);
     for (const item of stats.values()) {
-      if (item.type === 'candidate-pair' && item.state === 'succeeded' &&
-          Number.isFinite(item.currentRoundTripTime)) receiverMetrics.rttMs =
-            Math.round(item.currentRoundTripTime * 1000);
       if (item.type !== 'inbound-rtp') continue;
       const kind = item.kind || item.mediaType;
       if (kind === 'video') {
@@ -1414,11 +1542,6 @@ setInterval(async () => {
         receiverMetrics.videoRetransmitted = item.retransmittedPacketsReceived ?? null;
         receiverMetrics.videoJitterMs = Number.isFinite(item.jitter) ?
           Math.round(item.jitter * 1000) : null;
-        if (Number.isSafeInteger(item.packetsReceived) &&
-            Number.isSafeInteger(item.packetsLost) &&
-            Number.isSafeInteger(item.nackCount))
-          sendSignal({ type: 'network-feedback', received: item.packetsReceived,
-            lost: Math.max(0, item.packetsLost), nacks: item.nackCount });
       }
       const old = previousInbound.get(item.id);
       if (old) {
@@ -1507,7 +1630,7 @@ $('exportMetrics').onclick = () => {
     'input_transport', 'signaling_connected', 'signaling_buffered_bytes',
     'control_dc_buffered_bytes', 'pointer_dc_buffered_bytes',
     'ui_timer_lag_ms', 'host_video_send_max_ms',
-    'host_video_input_kbps', 'wan_target_kbps', 'wan_loss_percent',
+    'host_video_input_kbps', 'wan_target_kbps', 'wan_loss_percent', 'wan_rtt_backoff_enabled',
     'host_video_max_frame_bytes', 'host_video_keyframes_total',
     'host_video_recovery_requests_total', 'receiver_stats_age_ms',
     'mouse_mode', 'mouse_pointer_locked', 'native_app_version', 'native_capture_requested',
@@ -1515,7 +1638,8 @@ $('exportMetrics').onclick = () => {
     'receiver_audio_latency_supported', 'receiver_video_base_ms',
     'receiver_rollback_total', 'receiver_safety_blocked', 'receiver_setting_errors',
     'gamepad_redundant_total', 'gamepad_ack_rtt_ms', 'gamepad_ack_age_ms',
-    'client_version', 'host_version'],
+    'client_version', 'host_version', 'host_capture_paused', 'host_input_blocked',
+    'rtt_control_mode', 'host_commit'],
     ...metricRows];
   const blob = new Blob([rows.map(row => row.join(',')).join('\r\n') + '\r\n'],
     { type: 'text/csv;charset=utf-8' });

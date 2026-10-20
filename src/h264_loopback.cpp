@@ -373,6 +373,7 @@ void H264Loopback::Start(ID3D11Device* device, ID3D11DeviceContext* context,
         nextFrameDue_ = Clock::now();
         streamStartedAt_ = nextFrameDue_;
         recoveryKeyframes_ = recoveryKeyframes;
+        requestedRecoveryKeyframe_ = false;
         adaptiveRecovery_ = adaptiveRecovery;
         nextRecoveryKeyframe_ = nextFrameDue_;
         nv12Frame_.resize(outputWidth_ * outputHeight_ * 3 / 2);
@@ -778,7 +779,7 @@ void H264Loopback::ConvertLatestFrameToNv12() {
 
 void H264Loopback::SubmitNv12Frame() {
     const auto encodeStart = Clock::now();
-    if (recoveryKeyframes_ && encodeStart >= nextRecoveryKeyframe_) {
+    if (requestedRecoveryKeyframe_ || (recoveryKeyframes_ && encodeStart >= nextRecoveryKeyframe_)) {
         ComPtr<ICodecAPI> codecApi;
         Check(encoder_.As(&codecApi), "Query encoder keyframe control");
         VARIANT value{};
@@ -786,6 +787,7 @@ void H264Loopback::SubmitNv12Frame() {
         value.ulVal = 1;
         Check(codecApi->SetValue(&CODECAPI_AVEncVideoForceKeyFrame, &value),
               "Request recovery keyframe");
+        requestedRecoveryKeyframe_ = false;
         nextRecoveryKeyframe_ = encodeStart +
             std::chrono::seconds(adaptiveRecovery_ ? 2 : 1);
     }

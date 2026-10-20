@@ -24,7 +24,7 @@ cl.exe /nologo /std:c++20 /O2 /EHsc /W4 /permissive- ^
     /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /DNOMINMAX ^
     /Fe:out\remote_desk.exe src\main.cpp src\h264_recorder.cpp ^
     src\h264_loopback.cpp src\network_transport.cpp ^
-    /link d3d11.lib dxgi.lib user32.lib gdi32.lib ole32.lib oleaut32.lib ^
+    /link advapi32.lib d3d11.lib dxgi.lib user32.lib gdi32.lib ole32.lib oleaut32.lib ^
     mf.lib mfplat.lib mfreadwrite.lib mfuuid.lib wmcodecdspuuid.lib ws2_32.lib
 
 if errorlevel 1 exit /b %errorlevel%
@@ -41,7 +41,7 @@ if errorlevel 1 exit /b %errorlevel%
 cl.exe /nologo /std:c++20 /O2 /EHsc /W4 /permissive- ^
     /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /DNOMINMAX ^
     /Fe:out\remote_desk_input.exe src\remote_input.cpp ^
-    /link user32.lib dxgi.lib
+    /link user32.lib dxgi.lib advapi32.lib
 
 if errorlevel 1 exit /b %errorlevel%
 

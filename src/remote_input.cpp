@@ -9,6 +9,8 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include "system_channel.h"
+#include <thread>
 
 namespace {
 
@@ -51,16 +53,23 @@ int ListDisplays() {
 }
 
 bool Send(INPUT input) {
-    if (SendInput(1, &input, sizeof(input)) == 1) return true;
+    static bool blocked = false;
+    SetLastError(ERROR_SUCCESS);
+    if (SendInput(1, &input, sizeof(input)) == 1) {
+        if (blocked) { blocked = false; std::cout << "INPUT_OK\n" << std::flush; }
+        return true;
+    }
     // SendInput can fail (for example, on a protected/elevated desktop).
     // Keep diagnostics bounded even when a pointer move arrives every frame.
     static ULONGLONG nextReportAt = 0;
     const DWORD error = GetLastError();
     const ULONGLONG now = GetTickCount64();
+    if (!blocked) std::cout << "INPUT_BLOCKED " << error << '\n' << std::flush;
     if (now >= nextReportAt) {
         std::cerr << "SendInput failed; error=" << error << '\n';
         nextReportAt = now + 1000;
     }
+    blocked = true;
     return false;
 }
 
@@ -87,16 +96,16 @@ void MouseMove(int x, int y, const RECT& display) {
     Send(input);
 }
 
-void MouseButton(int button, bool down) {
+bool MouseButton(int button, bool down) {
     constexpr std::array<DWORD, 3> downFlags = {
         MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_RIGHTDOWN};
     constexpr std::array<DWORD, 3> upFlags = {
         MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_RIGHTUP};
-    if (button < 0 || button >= static_cast<int>(downFlags.size())) return;
+    if (button < 0 || button >= static_cast<int>(downFlags.size())) return false;
     INPUT input{};
     input.type = INPUT_MOUSE;
     input.mi.dwFlags = down ? downFlags[button] : upFlags[button];
-    Send(input);
+    return Send(input);
 }
 
 void MouseRelative(int x, int y) {
@@ -129,8 +138,8 @@ constexpr bool ExtendedNavigationKey(unsigned key) {
 static_assert(ExtendedNavigationKey(VK_LEFT) && ExtendedNavigationKey(VK_DOWN));
 static_assert(!ExtendedNavigationKey(VK_NUMPAD4));
 
-void Key(unsigned key, bool down) {
-    if (key > 255) return;
+bool Key(unsigned key, bool down) {
+    if (key > 255) return false;
     INPUT input{};
     input.type = INPUT_KEYBOARD;
     const UINT scan = MapVirtualKeyW(key, MAPVK_VK_TO_VSC_EX);
@@ -143,7 +152,19 @@ void Key(unsigned key, bool down) {
         input.ki.wVk = static_cast<WORD>(key);
     }
     if (!down) input.ki.dwFlags |= KEYEVENTF_KEYUP;
-    Send(input);
+    return Send(input);
+}
+
+void ReportCapsLock() {
+    // Refresh this thread's input snapshot before reading the toggle bit.
+    // GetAsyncKeyState's low bit means "pressed since last query", not Caps Lock.
+    MSG message{};
+    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+        TranslateMessage(&message);
+        DispatchMessageW(&message);
+    }
+    std::cout << "CAPS " << ((GetKeyState(VK_CAPITAL) & 1) ? 1 : 0)
+              << '\n' << std::flush;
 }
 
 void UnicodeUnit(WORD character) {
@@ -171,6 +192,16 @@ void Text(unsigned codepoint) {
 } // namespace
 
 int main(int argc, char** argv) {
+    bool systemChannel = false;
+    for (int i = 1; i < argc; ++i) {
+        const std::string argument(argv[i]);
+        if (argument.rfind("--system-channel=", 0) == 0) {
+            try { remotedesk::ConnectSystemChannel(std::wstring(argument.begin()+17, argument.end())); }
+            catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 2; }
+            systemChannel = true;
+        }
+    }
+    remotedesk::InputDesktop inputDesktop;
     if (argc > 1 && std::string(argv[1]) == "--list-displays") {
         return ListDisplays();
     }
@@ -188,7 +219,19 @@ int main(int argc, char** argv) {
         outputIndex = static_cast<unsigned>(argument[12] - '0');
     }
     RECT display{};
-    try { display = DisplayRect(adapterIndex, outputIndex); }
+    try {
+        if (systemChannel) {
+            // Keep any DXGI internal windows off the thread that must switch
+            // between Default and Winlogon for SendInput.
+            std::exception_ptr failure;
+            std::thread enumeration([&] {
+                try { display = DisplayRect(adapterIndex, outputIndex); }
+                catch (...) { failure = std::current_exception(); }
+            });
+            enumeration.join();
+            if (failure) std::rethrow_exception(failure);
+        } else display = DisplayRect(adapterIndex, outputIndex);
+    }
     catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;
@@ -196,20 +239,38 @@ int main(int argc, char** argv) {
     // The bridge must not report remote control as active until the selected
     // Windows display has been opened successfully.
     std::cout << "READY\n" << std::flush;
+    ReportCapsLock();
     std::set<unsigned> heldKeys;
     std::set<int> heldButtons;
+    bool releasePending = false;
     const auto releaseHeld = [&] {
-        for (unsigned key : heldKeys) Key(key, false);
-        for (int button : heldButtons) MouseButton(button, false);
-        heldKeys.clear();
-        heldButtons.clear();
+        for (auto it = heldKeys.begin(); it != heldKeys.end();) {
+            if (Key(*it, false)) it = heldKeys.erase(it); else ++it;
+        }
+        for (auto it = heldButtons.begin(); it != heldButtons.end();) {
+            if (MouseButton(*it, false)) it = heldButtons.erase(it); else ++it;
+        }
+        releasePending = !heldKeys.empty() || !heldButtons.empty();
     };
     std::string line;
     while (std::getline(std::cin, line)) {
+        if (systemChannel && !inputDesktop.Follow()) {
+            std::cout << "INPUT_BLOCKED " << GetLastError() << '\n' << std::flush;
+            continue;
+        }
         std::istringstream command(line);
         char kind = 0;
         command >> kind;
-        if (kind == 'M') {
+        if (releasePending && kind != 'C' && kind != 'R') {
+            releaseHeld();
+            if (releasePending) continue;
+        }
+        if (kind == 'C') {
+            // A release rejected on the secure desktop must be retried once
+            // the ordinary desktop is available, rather than forgotten.
+            if (releasePending) releaseHeld();
+            ReportCapsLock();
+        } else if (kind == 'M') {
             int x = -1, y = -1;
             if (command >> x >> y && x >= 0 && x <= 65535 &&
                 y >= 0 && y <= 65535) MouseMove(x, y, display);
@@ -221,18 +282,20 @@ int main(int argc, char** argv) {
             int button = -1, down = -1;
             if (command >> button >> down && button >= 0 && button <= 2 &&
                 (down == 0 || down == 1)) {
-                MouseButton(button, down != 0);
-                if (down) heldButtons.insert(button);
-                else heldButtons.erase(button);
+                if (MouseButton(button, down != 0)) {
+                    if (down) heldButtons.insert(button);
+                    else heldButtons.erase(button);
+                } else if (!down && heldButtons.count(button)) releasePending = true;
             }
         } else if (kind == 'K') {
             unsigned key = 0;
             int down = -1;
             if (command >> key >> down && key > 0 && key <= 255 &&
                 (down == 0 || down == 1)) {
-                Key(key, down != 0);
-                if (down) heldKeys.insert(key);
-                else heldKeys.erase(key);
+                if (Key(key, down != 0)) {
+                    if (down) heldKeys.insert(key);
+                    else heldKeys.erase(key);
+                } else if (!down && heldKeys.count(key)) releasePending = true;
             }
         } else if (kind == 'R') {
             releaseHeld();

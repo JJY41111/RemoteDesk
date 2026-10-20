@@ -15,6 +15,8 @@ const mode = ['cpu', 'stable', 'mobile', 'game'].includes(process.env.QUALITY_MO
   process.env.QUALITY_MODE : 'gpu';
 const native = process.env.QUALITY_NATIVE === '1';
 const serverLaunch = process.env.QUALITY_SERVER_LAUNCH === '1';
+const queueFeedbackTest = process.env.QUALITY_QUEUE_FEEDBACK === '1';
+const lossOnlyTest = process.env.QUALITY_RTT_BACKOFF === '0';
 const rateFeedbackTest = process.env.QUALITY_RATE_FEEDBACK === '1';
 const recoveryTest = process.env.QUALITY_RECOVERY === '1';
 const slowSignal = process.env.QUALITY_SLOW_SIGNAL === '1';
@@ -22,6 +24,9 @@ const dynamic = process.env.QUALITY_DYNAMIC === '1';
 const receiverControlTest = process.env.QUALITY_RECEIVER_CONTROL === '1';
 const requestRecoveryTest = process.env.QUALITY_REQUEST_RECOVERY === '1';
 if (recoveryTest && serverLaunch) throw new Error('Recovery fault test uses the manual source');
+const systemHost = process.env.QUALITY_SYSTEM_HOST === '1';
+const desktopWorker = process.env.QUALITY_DESKTOP_WORKER === '1';
+if(desktopWorker && serverLaunch)throw new Error('Desktop worker candidate test uses manual source');
 const tailnet = process.env.QUALITY_TAILNET === '1';
 const host = tailnet ? localTailnetIPv4()[0] : '127.0.0.1';
 if (!host) throw new Error('No active Tailscale IPv4 for isolated tailnet test');
@@ -29,7 +34,7 @@ const duration = Number(process.env.QUALITY_DURATION ?? 12);
 if (!Number.isInteger(duration) || duration < 5 || duration > 300) {
   throw new Error('QUALITY_DURATION must be 5–300 seconds');
 }
-const label = `${native ? 'native' : '1080'}-${mode}${receiverControlTest ? '-receiver-control' : ''}${recoveryTest ? '-recovery' : ''}${slowSignal ? '-slow-signal' : ''}${tailnet ? '-tailnet' : ''}${serverLaunch ? '-server' : ''}${duration === 12 ? '' : `-${duration}s`}`;
+const label = `${lossOnlyTest ? 'loss-only-' : ''}${desktopWorker ? 'desktop-worker-' : ''}${systemHost ? 'system-host-' : ''}${native ? 'native' : '1080'}-${mode}${receiverControlTest ? '-receiver-control' : ''}${recoveryTest ? '-recovery' : ''}${slowSignal ? '-slow-signal' : ''}${tailnet ? '-tailnet' : ''}${serverLaunch ? '-server' : ''}${duration === 12 ? '' : `-${duration}s`}`;
 const results = resolve(bridge, 'test-results');
 await mkdir(results, { recursive: true });
 try {
@@ -41,6 +46,7 @@ try {
 }
 const server = spawn(process.execPath,
   ['server.mjs', '--port=8544', '--tcp-port=55444',
+    ...(systemHost ? ['--system-host'] : []),
     ...(tailnet ? ['--tailnet', `--host=${host}`] : []),
     ...(serverLaunch ? [] : ['--no-launch'])],
   { cwd: bridge, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -150,6 +156,50 @@ try {
       await page.waitForFunction(() => serverStats?.wanTargetKbps < 8000);
       await page.waitForTimeout(700);
     }
+    if (queueFeedbackTest) {
+      if (!tailnet) throw new Error('RTT feedback test requires isolated tailnet mode');
+      await page.waitForFunction(() => receiverMetrics.videoReceived > 1000);
+      if (lossOnlyTest) {
+        // Exercise the user's live switch and host acknowledgment, not just a
+        // controller created with a constructor option.
+        await page.locator('#menuToggle').click();
+        await page.locator('#rttBackoff').uncheck();
+        await page.waitForFunction(() => serverStats?.wanRttBackoffEnabled === false);
+      } else if (!(await page.locator('#rttBackoff').isChecked())) {
+        throw new Error('Default RTT protection changed');
+      }
+      await page.evaluate(() => {
+        // Keep automatic getStats reports from consuming the host's 1.5 s
+        // feedback throttle between deliberately injected A/B reports.
+        window.qualityOriginalSend = socket.send.bind(socket);
+        socket.send = value => {
+          const message = JSON.parse(value);
+          if (message.type !== 'network-feedback' || message.qualityFeedback)
+            window.qualityOriginalSend(value);
+        };
+      });
+      await page.waitForTimeout(1700);
+      await page.evaluate(async () => {
+        const { report } = readNetworkFeedback(await peer.getStats());
+        if (!report) throw new Error('No actual media counters for feedback');
+        window.qualityFeedbackBase = report;
+        sendSignal({ ...report, received: report.received + 1000, rttMs: 441, qualityFeedback: true });
+      });
+      if (lossOnlyTest) {
+        await page.waitForTimeout(1200);
+        if (await page.evaluate(() => serverStats.wanTargetKbps) !== 8000)
+          throw new Error('Disabled RTT backoff still cut bitrate');
+        await page.waitForTimeout(1700);
+        await page.evaluate(() => {
+          const report = window.qualityFeedbackBase;
+          sendSignal({ ...report, received: report.received + 1000,
+            lost: report.lost + 100, rttMs: 441, qualityFeedback: true });
+        });
+        await page.waitForFunction(() => serverStats?.wanTargetKbps === 5600);
+      } else await page.waitForFunction(() => serverStats?.wanTargetKbps === 6800);
+      await page.waitForTimeout(700);
+      await page.evaluate(() => { socket.send = window.qualityOriginalSend; });
+    }
     for (let second = 0; second < duration; second++) {
       if (receiverControlTest && second === 2) {
         await page.locator('#menuToggle').click();
@@ -186,10 +236,11 @@ try {
     if (samples.slice(5).some(s => s.connection !== 'connected' || s.renderedFps < 10))
       throw new Error('Long stream disconnected or presentation stalled');
   } else {
-    capture = spawn(resolve(project, 'out', 'remote_desk.exe'),
+    capture = spawn(resolve(project, 'out', ...(desktopWorker ? ['system-host'] : []), 'remote_desk.exe'),
       [native ? '--network-native-60-test' :
         mode === 'stable' ? '--network-1080-30-test' : '--network-1080-60-test',
         `--tcp-port=${recoveryTest ? 55447 : 55444}`, `--duration=${duration}`,
+        ...(desktopWorker ? ['--desktop-worker-test'] : []),
         ...(recoveryTest ? ['--recovery-keyframes'] : []),
         ...(mode === 'game' ? ['--adaptive-recovery', '--wan-video'] : []),
         ...(mode === 'cpu' ? ['--cpu-conversion'] : [])],
@@ -223,10 +274,12 @@ try {
         result.pointerChannel.ordered !== false ||
         result.pointerChannel.maxRetransmits !== 0)))
     throw new Error('Video or fast gamepad channel failed: ' + JSON.stringify(result));
-  const captureLog = await readFile(resolve(project, 'runtime.log'), 'utf8');
+  const captureLog = await readFile(systemHost ? resolve(process.env.ProgramData, 'RemoteDeskHost/capture-0/runtime.log') : resolve(project, 'runtime.log'), 'utf8');
   if (requestRecoveryTest && (!captureLog.includes('network recovery: requested keyframe') ||
       !result.source.videoRecoveryRequests))
     throw new Error('Default WAN mode did not forward recovery to the encoder');
+  if (queueFeedbackTest && !captureLog.includes(`network bitrate: applied ${lossOnlyTest ? 5600 : 6800} kbps`))
+    throw new Error('RTT feedback did not reach the real encoder');
   if (rateFeedbackTest && !captureLog.includes('network bitrate: applied 5600 kbps'))
     throw new Error('The capture encoder did not apply feedback: ' + captureLog);
   if (mode === 'game' && ((serverLaunch && !captureLog.includes('network recovery: requested keyframe')) ||
@@ -240,11 +293,25 @@ try {
   if (mode === 'stable' && !captureLog.includes('1920x1080@30'))
     throw new Error('The paired stable mode did not reach the host capture process');
   await page.locator('#screen').screenshot({ path: resolve(results, `quality-${label}.png`) });
+  result.pixelContent = await page.evaluate(() => {
+    const canvas = document.createElement('canvas'); canvas.width = 96; canvas.height = 54;
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    context.drawImage(screen, 0, 0, canvas.width, canvas.height);
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    let visible = 0;
+    for (let i = 0; i < pixels.length; i += 4)
+      if (Math.max(pixels[i], pixels[i + 1], pixels[i + 2]) > 24) visible++;
+    return { nonBlackFraction: visible / (canvas.width * canvas.height) };
+  });
   await writeFile(resolve(results, `quality-${label}.json`), JSON.stringify({
-    mode, native, tailnet, recoveryTest, receiverControlTest, slowSignal, keyframes, droppedInitialKeyframe,
+    mode, native, tailnet, systemHost, lossOnlyTest, queueFeedbackTest, recoveryTest, receiverControlTest, slowSignal, keyframes, droppedInitialKeyframe,
     at: new Date().toISOString(), dynamic, samples, result,
     captureLog
   }, null, 2));
+  // A stream can decode at 60 FPS while containing only black pixels. Keep the
+  // screenshot/JSON on failure so frame counts cannot hide that regression.
+  if (desktopWorker && result.pixelContent.nonBlackFraction < 0.01)
+    throw new Error('Desktop worker stream is visually black; inspect saved screenshot');
   console.log(JSON.stringify({ mode, native, recoveryTest, keyframes, result }));
 } finally {
   capture?.kill();

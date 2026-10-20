@@ -1,4 +1,6 @@
 #include <windows.h>
+#include "system_channel.h"
+#include "desktop_duplication_worker.h"
 
 #include <d3d11.h>
 #include <dxgi1_2.h>
@@ -14,11 +16,13 @@
 #include <cstdint>
 #include <fstream>
 #include <iomanip>
+#include <iostream>
 #include <thread>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <memory>
 
 using Microsoft::WRL::ComPtr;
 
@@ -34,6 +38,8 @@ unsigned long long gMoveCaptureFrames = 0;
 std::atomic<unsigned> gRequestedWanBitrate{0};
 std::atomic<bool> gRequestedRecoveryKeyframe{false};
 bool gAdaptiveRecovery = false;
+bool gCaptureRecoveryTest = false;
+bool gDesktopWorkerTest = false;
 
 void ReadWanBitrateCommands() {
     const HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
@@ -41,7 +47,7 @@ void ReadWanBitrateCommands() {
     std::string pending;
     char bytes[128];
     DWORD count = 0;
-    while (ReadFile(input, bytes, sizeof(bytes), &count, nullptr) && count) {
+    while (remotedesk::ReadHelperInput(input, bytes, sizeof(bytes), count) && count) {
         pending.append(bytes, count);
         for (;;) {
             const auto newline = pending.find('\n');
@@ -338,9 +344,10 @@ public:
 
         ComPtr<IDXGIOutput1> output1;
         ThrowIfFailed(output_.As(&output1), "Query IDXGIOutput1");
-        ThrowIfFailed(output1->DuplicateOutput(device_.Get(), &duplication_),
-                      "DuplicateOutput");
-        Log("initialize: desktop duplication created");
+        const HRESULT duplicated = CreateDuplication(output1.Get());
+        if (IsCaptureTransition(duplicated)) PauseCapture(duplicated);
+        else ThrowIfFailed(duplicated, "DuplicateOutput");
+        if (duplication_ || systemDuplication_) Log("initialize: desktop duplication created");
 
         DXGI_SWAP_CHAIN_DESC1 swapChainDescription{};
         swapChainDescription.Width = width_;
@@ -406,6 +413,13 @@ public:
         ProcessAutomaticLoopback();
         ProcessAutomaticNetwork();
 
+        if (!duplication_ && !systemDuplication_ && !RestoreDuplication()) {
+            // A secure desktop may remain active for minutes. Do not busy-spin
+            // or submit an old desktop image as if it were a fresh capture.
+            Sleep(16);
+            return;
+        }
+
         DXGI_OUTDUPL_FRAME_INFO frameInfo{};
         ComPtr<IDXGIResource> desktopResource;
 
@@ -414,11 +428,16 @@ public:
             automaticNetworkStarted_ && networkFramesPerSecond_ == 60
                 ? loopback_.MillisecondsUntilNextFrame()
                 : 16;
-        const HRESULT result = duplication_->AcquireNextFrame(
-            captureTimeout, &frameInfo, &desktopResource);
+        const bool injectInvalidCall = gCaptureRecoveryTest && !recoveryTestStarted_ &&
+            automaticNetworkStarted_ &&
+            Clock::now() - automaticNetworkStart_ > std::chrono::seconds(2);
+        const HRESULT result = injectInvalidCall ? DXGI_ERROR_INVALID_CALL :
+            (systemDuplication_?systemDuplication_->Acquire(captureTimeout,&frameInfo,&desktopResource):
+             duplication_->AcquireNextFrame(captureTimeout, &frameInfo, &desktopResource));
 
         if (result == DXGI_ERROR_WAIT_TIMEOUT) {
             ++timeouts_;
+            if (capturePaused_) return;
             if (!firstFrameCaptured_ &&
                 !initialFrameFallbackAttempted_ &&
                 (automaticNetworkTest_ || continuousNetwork_) &&
@@ -443,23 +462,40 @@ public:
             return;
         }
 
-        if (result == DXGI_ERROR_ACCESS_LOST) {
-            throw std::runtime_error(
-                "Desktop duplication access was lost. Restart the program after "
-                "a display-mode or monitor change.");
+        // Some desktop transitions invalidate the acquisition state with
+        // INVALID_CALL rather than ACCESS_LOST. Drop this duplication instance
+        // (including any stale frame ownership) and recreate it with backoff.
+        if (IsCaptureTransition(result) || result == DXGI_ERROR_INVALID_CALL) {
+            PauseCapture(result);
+            if (injectInvalidCall) {
+                recoveryTestStarted_ = true;
+                nextDuplicationRetry_ = Clock::now() + std::chrono::seconds(7);
+                Log("capture: simulated AcquireNextFrame INVALID_CALL (test only)");
+            }
+            return;
         }
         ThrowIfFailed(result, "AcquireNextFrame");
 
         struct FrameReleaser {
             IDXGIOutputDuplication* duplication;
-            ~FrameReleaser() { duplication->ReleaseFrame(); }
-        } releaseFrame{duplication_.Get()};
+            remotedesk::DesktopDuplicationWorker* worker;
+            ~FrameReleaser() { if(worker)worker->Release();else duplication->ReleaseFrame(); }
+        } releaseFrame{duplication_.Get(),systemDuplication_.get()};
 
         ComPtr<ID3D11Texture2D> desktopTexture;
         ThrowIfFailed(desktopResource.As(&desktopTexture),
                       "Query desktop texture");
 
         context_->CopyResource(latestFrameTexture_.Get(), desktopTexture.Get());
+        // The duplication owner releases on another thread. Submit the copy
+        // before that thread returns the acquired surface to DXGI.
+        if(systemDuplication_)context_->Flush();
+        if (capturePaused_) {
+            capturePaused_ = false;
+            if (loopback_.IsRunning()) loopback_.RequestRecoveryKeyframe();
+            Log("capture: desktop access restored; first fresh frame acquired");
+            std::cerr << "CAPTURE_STATE RESUMED\n" << std::flush;
+        }
         if (frameInfo.LastMouseUpdateTime.QuadPart != 0) {
             pointerVisible_ = frameInfo.PointerPosition.Visible != FALSE;
             if (pointerVisible_) {
@@ -579,13 +615,28 @@ private:
         HDC dc{};
         ThrowIfFailed(latestFrameSurface_->GetDC(FALSE, &dc),
                       "Get latest-frame GDI DC");
-        const BOOL drawn = DrawIconEx(dc, pointerPosition_.x, pointerPosition_.y,
-                                     cursorInfo.hCursor, 0, 0, 0, nullptr,
-                                     DI_NORMAL);
+        // Cursor handles may disappear during a desktop/security transition.
+        // An optional overlay must not tear down the entire video transport.
+        const bool injectPointerFailure = gCaptureRecoveryTest && !pointerFailureTestInjected_;
+        if (injectPointerFailure) pointerFailureTestInjected_ = true;
+        SetLastError(ERROR_SUCCESS);
+        const BOOL drawn = injectPointerFailure ? FALSE :
+            DrawIconEx(dc, pointerPosition_.x, pointerPosition_.y,
+                       cursorInfo.hCursor, 0, 0, 0, nullptr, DI_NORMAL);
+        const DWORD drawError = injectPointerFailure ? ERROR_INVALID_CURSOR_HANDLE : GetLastError();
         const HRESULT releaseResult = latestFrameSurface_->ReleaseDC(nullptr);
         ThrowIfFailed(releaseResult, "Release latest-frame GDI DC");
         if (!drawn) {
-            throw std::runtime_error("Draw desktop pointer failed");
+            if (!pointerOverlayUnavailable_) {
+                Log("capture: pointer overlay unavailable; error=" + std::to_string(drawError) +
+                    (injectPointerFailure ? " (injected test failure)" : "") + "; video continues");
+                pointerOverlayUnavailable_ = true;
+            }
+            return;
+        }
+        if (pointerOverlayUnavailable_) {
+            Log("capture: pointer overlay restored");
+            pointerOverlayUnavailable_ = false;
         }
         if (++pointerCompositedFrames_ == 1) {
             Log("capture: first pointer composed");
@@ -928,6 +979,53 @@ private:
         statisticsStart_ = now;
     }
 
+    static bool IsCaptureTransition(HRESULT result) {
+        return result == DXGI_ERROR_ACCESS_LOST || result == E_ACCESSDENIED ||
+            result == DXGI_ERROR_ACCESS_DENIED || result == DXGI_ERROR_SESSION_DISCONNECTED ||
+            result == DXGI_ERROR_NOT_CURRENTLY_AVAILABLE || result == DXGI_ERROR_UNSUPPORTED;
+    }
+    void PauseCapture(HRESULT reason) {
+        duplication_.Reset();
+        systemDuplication_.reset();
+        nextDuplicationRetry_ = Clock::now() + std::chrono::milliseconds(500);
+        if (!capturePaused_) {
+            capturePaused_ = true;
+            Log("capture: desktop temporarily unavailable; HRESULT=" +
+                std::to_string(static_cast<unsigned long>(reason)));
+            std::cerr << "CAPTURE_STATE PAUSED\n" << std::flush;
+        }
+    }
+    bool RestoreDuplication() {
+        if (Clock::now() < nextDuplicationRetry_) return false;
+        nextDuplicationRetry_ = Clock::now() + std::chrono::milliseconds(500);
+        DXGI_OUTPUT_DESC description{};
+        ThrowIfFailed(output_->GetDesc(&description), "Read display after desktop switch");
+        const UINT width = description.DesktopCoordinates.right - description.DesktopCoordinates.left;
+        const UINT height = description.DesktopCoordinates.bottom - description.DesktopCoordinates.top;
+        if (width != width_ || height != height_)
+            throw std::runtime_error("Capture display resolution changed; reconnect to configure the new resolution");
+        ComPtr<IDXGIOutput1> output;
+        ThrowIfFailed(output_.As(&output), "Query output after desktop switch");
+        const HRESULT result = CreateDuplication(output.Get());
+        if (IsCaptureTransition(result)) return false;
+        ThrowIfFailed(result, "Restore desktop duplication");
+        return true;
+    }
+
+    HRESULT CreateDuplication(IDXGIOutput1* output) {
+        if(!remotedesk::systemInputPipe && !gDesktopWorkerTest && !gCaptureRecoveryTest)
+            return output->DuplicateOutput(device_.Get(),&duplication_);
+        auto worker=std::make_unique<remotedesk::DesktopDuplicationWorker>(output,device_.Get());
+        const HRESULT result=worker->Ready();
+        if(SUCCEEDED(result))systemDuplication_=std::move(worker);
+        return result;
+    }
+
+    bool pointerOverlayUnavailable_{};
+    bool pointerFailureTestInjected_{};
+    bool capturePaused_{};
+    bool recoveryTestStarted_{};
+    Clock::time_point nextDuplicationRetry_{};
     HWND window_{};
     UINT width_{};
     UINT height_{};
@@ -939,6 +1037,7 @@ private:
     ComPtr<ID3D11Device> device_;
     ComPtr<ID3D11DeviceContext> context_;
     ComPtr<IDXGIOutputDuplication> duplication_;
+    std::unique_ptr<remotedesk::DesktopDuplicationWorker> systemDuplication_;
     ComPtr<IDXGISwapChain1> swapChain_;
     ComPtr<ID3D11Texture2D> backBuffer_;
     ComPtr<ID3D11Texture2D> latestFrameTexture_;
@@ -1038,6 +1137,12 @@ HWND CreateMainWindow(HINSTANCE instance) {
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine,
                     int showCommand) {
     try {
+        if (const wchar_t* channel = commandLine ? wcsstr(commandLine, L"--system-channel=") : nullptr) {
+            std::wstring name(channel + 17);
+            name = name.substr(0, name.find(L' '));
+            remotedesk::ConnectSystemChannel(name);
+            showCommand = SW_HIDE;
+        }
         const HRESULT comResult =
             CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
         ThrowIfFailed(comResult, "CoInitializeEx");
@@ -1053,6 +1158,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine,
         Log("window: created");
 
         DesktopCaptureApp application;
+        gCaptureRecoveryTest = commandLine && wcsstr(commandLine, L"--capture-recovery-test");
         const bool automaticRecordingTest =
             commandLine != nullptr &&
             wcsstr(commandLine, L"--record-test") != nullptr;
@@ -1109,6 +1215,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine,
             network30Live || network60Live || network1080Live ||
             network1080StableLive ||
             networkNativeLive;
+        gDesktopWorkerTest=commandLine && wcsstr(commandLine,L"--desktop-worker-test");
+        if(gDesktopWorkerTest && !automaticNetworkTest)
+            throw std::invalid_argument("--desktop-worker-test requires a bounded network test");
         const unsigned networkFramesPerSecond =
             network60Test || network60Live || network1080Test ||
                     network1080Live || networkNativeTest || networkNativeLive
@@ -1160,7 +1269,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine,
 
         gAdaptiveRecovery = commandLine && wcsstr(commandLine, L"--adaptive-recovery");
         if (continuousNetwork &&
-            commandLine && wcsstr(commandLine, L"--wan-video")) {
+            commandLine && (wcsstr(commandLine, L"--wan-video") || gAdaptiveRecovery ||
+                            wcsstr(commandLine, L"--system-channel="))) {
             std::thread(ReadWanBitrateCommands).detach();
         }
 
@@ -1181,7 +1291,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine,
             }
 
             if (running) {
-                application.CaptureNextFrame();
+                try {
+                    application.CaptureNextFrame();
+                } catch (const std::exception& error) {
+                    // Log before stack unwinding closes TCP and the bridge cleans up.
+                    Log(std::string("capture: failure before transport cleanup: ") + error.what());
+                    throw;
+                }
             }
         }
 

@@ -16,12 +16,16 @@ add_executable(remote_desk_receiver
 )
 add_executable(remote_desk_input src/remote_input.cpp)
 add_executable(remote_desk_audio src/audio_loopback.cpp)
+add_executable(remote_desk_host src/host_service.cpp)
+target_compile_features(remote_desk_host PRIVATE cxx_std_20)
+target_compile_definitions(remote_desk_host PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_link_libraries(remote_desk_host PRIVATE user32 advapi32 wtsapi32 userenv ole32)
 target_compile_features(remote_desk_input PRIVATE cxx_std_20)
 target_compile_features(remote_desk_audio PRIVATE cxx_std_20)
 target_compile_definitions(remote_desk_input PRIVATE
     UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
 )
-target_link_libraries(remote_desk_input PRIVATE user32 dxgi)
+target_link_libraries(remote_desk_input PRIVATE user32 dxgi advapi32)
 target_compile_definitions(remote_desk_audio PRIVATE
     UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
 )
@@ -55,6 +59,7 @@ target_compile_definitions(remote_desk PRIVATE
 )
 
 target_link_libraries(remote_desk PRIVATE
+    advapi32
     d3d11
     dxgi
     gdi32

@@ -6,7 +6,7 @@ import { createReadStream, appendFileSync, existsSync, mkdirSync,
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { createServer as createTcpServer, connect as connectTcp } from 'node:net';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { WebSocketServer } from 'ws';
 import rtc from 'node-datachannel';
@@ -20,16 +20,33 @@ import { ensureCertificate, certificateFingerprint } from './setup.mjs';
 import { FrameReader, containsH264Keyframe, h264SpsProfile } from './protocol.mjs';
 import { isLocalTailnetHost } from './tailnet-address.mjs';
 import { ConnectionGrace } from './connection-grace.mjs';
-import { WanRateController } from './wan-rate.mjs';
+import { WanRateController, rttControlEnabled } from './wan-rate.mjs';
 import { handleTransfer } from './transfer.mjs';
 import { PairingAdmin } from './pairing-admin.mjs';
+import { clientProfile } from './client-profile.mjs';
+import { helperAccess } from './host-access.mjs';
+import { nextInputRestart } from './input-restart.mjs';
 
 const base = dirname(fileURLToPath(import.meta.url));
 const project = resolve(base, '..');
+const rttControl = rttControlEnabled();
+const gitCommit = spawnSync('git', ['rev-parse', '--short=12', 'HEAD'],
+  { cwd: project, windowsHide: true, timeout: 3000, encoding: 'utf8' });
+const commit = gitCommit.status === 0 && /^[a-f0-9]{7,40}$/.test(gitCommit.stdout?.trim()) ?
+  gitCommit.stdout.trim() : 'unknown';
+const gitDirty = commit !== 'unknown' && spawnSync('git', ['diff', '--quiet', 'HEAD', '--'],
+  { cwd: project, windowsHide: true, timeout: 3000 }).status === 1;
+const hostCommit = commit + (gitDirty ? '-dirty' : '');
+const rateMode = current => !current.rateControl ? 'inactive' :
+  current.rateControl.rttBackoffEnabled ? 'rtt-and-loss' : 'loss-only';
 const web = join(base, 'web');
-const transferFolder = join(dirname(project), 'ipad傳輸');
-const transferTemporary = join(base, 'private', 'transfer-temp');
-const diagnosticLog = join(base, 'session.log');
+const profile = clientProfile(process.argv.find(a => a.startsWith('--client='))?.slice(9) || 'ipad',
+  process.argv.includes('--tailnet'));
+const transferFolder = join(dirname(project), profile.transferName);
+const transferTemporary = join(base, profile.privateDirectory, 'transfer-temp');
+const diagnosticLog = join(base, profile.diagnosticLog);
+const viiperApiPort = profile.client === 'pc' ? 3244 : 3242;
+const viiperUsbPort = profile.client === 'pc' ? 3243 : 3241;
 function logEvent(message) {
   const line = `${new Date().toISOString()} ${message}`;
   console.log(line);
@@ -51,6 +68,16 @@ if ([...args].some(a => a.startsWith('--gamepad=') && a !== '--gamepad=viiper') 
   throw new Error('Use --gamepad=viiper together with --enable-input');
 }
 const noLaunch = args.has('--no-launch');
+const systemHost = args.has('--system-host');
+const systemHostExe = join(process.env.ProgramFiles || 'C:\\Program Files', 'RemoteDeskHost', 'remote_desk_host.exe');
+if (systemHost) {
+  const probe = spawnSync(systemHostExe, ['--status'], { windowsHide: true, timeout: 4000, encoding: 'utf8' });
+  if (probe.status !== 0 || !probe.stdout?.includes('HOST_OK'))
+    throw new Error('RemoteDeskHost unavailable or this local console account is not authorized. No privilege fallback was used.');
+}
+const captureRecoveryTest = process.env.REMOTEDESK_TEST_CAPTURE_RECOVERY === '1';
+if (captureRecoveryTest && (host !== '127.0.0.1' || tailnet))
+  throw new Error('Capture recovery injection is restricted to localhost tests');
 const use720 = args.has('--720p');
 const cpuConversion = args.has('--cpu-conversion');
 const enableAudio = args.has('--audio');
@@ -72,7 +99,7 @@ const tls = {
   cert: await readFile(certificate.certPath),
   key: await readFile(certificate.keyPath)
 };
-const pairing = await new PairingAdmin({ directory: join(base, 'private'),
+const pairing = await new PairingAdmin({ directory: join(base, profile.privateDirectory),
   mode: tailnet ? 'wan' : 'lan', port, host }).init();
 const prefix = 'https://' + host + ':' + port;
 const caPort = port - 1;
@@ -93,6 +120,9 @@ const pages = new Map([
   ['/icons/remotedesk-512.png', ['icons/remotedesk-512.png', 'image/png']]
 ]);
 const https = createHttpsServer(tls, (req, res) => {
+  if (profile.client === 'pc' && req.method === 'GET' && req.url === '/') {
+    res.writeHead(302, { location: '/?client=pc', 'cache-control': 'no-store' }); res.end(); return;
+  }
   if (req.url.startsWith('/api/launcher/pairing')) {
     void pairing.handle(req, res).catch(() => { if (!res.headersSent) res.writeHead(500); res.end(); });
     return;
@@ -147,7 +177,7 @@ let managedViiper = null;
 
 function viiperListening() {
   return new Promise(resolveResult => {
-    const socket = connectTcp({ host: '127.0.0.1', port: 3242 });
+    const socket = connectTcp({ host: '127.0.0.1', port: viiperApiPort });
     socket.setTimeout(500);
     socket.once('connect', () => { socket.destroy(); resolveResult(true); });
     socket.once('error', () => resolveResult(false));
@@ -168,8 +198,8 @@ async function startViiperIfNeeded() {
   if (!existsSync(executable)) {
     throw new Error('找不到 VIIPER，請先在主機安裝手把連接器');
   }
-  managedViiper = spawn(executable, ['server', '--usb.addr=127.0.0.1:3241',
-    '--api.addr=127.0.0.1:3242', '--api.auto-attach-windows-native'],
+  managedViiper = spawn(executable, ['server', `--usb.addr=127.0.0.1:${viiperUsbPort}`,
+    `--api.addr=127.0.0.1:${viiperApiPort}`, '--api.auto-attach-windows-native'],
   { cwd: dirname(executable), stdio: 'ignore', windowsHide: true });
   managedViiper.on('error', error => logEvent(`VIIPER start failed: ${error.message}`));
   managedViiper.on('exit', code => {
@@ -177,7 +207,7 @@ async function startViiperIfNeeded() {
     managedViiper = null;
   });
   for (let attempt = 0; attempt < 40; attempt++) {
-    if (await viiperListening()) { logEvent('VIIPER backend ready on localhost'); return; }
+    if (await viiperListening()) { logEvent(`VIIPER backend ready on localhost:${viiperApiPort}`); return; }
     await new Promise(resolveWait => setTimeout(resolveWait, 100));
   }
   throw new Error('VIIPER 未能在主機啟動');
@@ -207,6 +237,7 @@ function disposeSession(reason = 'disconnected', old = session) {
     inputHelper.stdin.end();
     inputHelper = null;
   }
+  clearInterval(old.keyboardStateTimer);
   clearTimeout(old.inputReadyTimer);
   clearTimeout(old.inputRestartTimer);
   clearInterval(old.audioTimer);
@@ -330,25 +361,56 @@ function handleControl(current, payload, channel = 'control') {
 
 function startInputHelper(current) {
   if (!enableInput || session !== current || current.closed || inputHelper) return;
-  const helper = spawn(join(project, 'out', 'remote_desk_input.exe'), [displayArg],
+  const helper = spawn(systemHost ? systemHostExe : process.env.REMOTEDESK_INPUT_EXE || join(project, 'out', 'remote_desk_input.exe'),
+    systemHost ? ['--input', displayArg, ...(profile.client === 'pc' ? ['--client=pc'] : [])] : [displayArg],
     { cwd: project, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
   inputHelper = helper;
   current.inputReady = false;
-  let readyText = '';
+  let outputText = '';
+  let readyAt = null;
   helper.stdout.on('data', chunk => {
     if (session !== current || inputHelper !== helper) return;
-    readyText += String(chunk);
-    if (!/READY\r?\n/.test(readyText)) return;
-    current.inputReady = true;
-    current.inputRestarts = 0;
-    clearTimeout(current.inputReadyTimer);
-    logEvent('Remote input helper ready');
-    if (current.controlRequested) {
-      current.controlEnabled = true;
-      json(current.ws, { type: 'control-state', enabled: true });
-      logEvent('Remote control enabled');
+    outputText += String(chunk);
+    let newline;
+    while ((newline = outputText.indexOf('\n')) >= 0) {
+      const line = outputText.slice(0, newline).trim();
+      outputText = outputText.slice(newline + 1);
+      if (line === 'READY' && !current.inputReady) {
+        current.inputReady = true;
+        readyAt = performance.now();
+        clearTimeout(current.inputReadyTimer);
+        logEvent('Remote input helper ready');
+        if (current.controlRequested) {
+          current.controlEnabled = true;
+          json(current.ws, { type: 'control-state', enabled: true });
+          logEvent('Remote control enabled');
+        }
+      } else if (/^CAPS [01]$/.test(line) && current.inputReady) {
+        const capsLock = line === 'CAPS 1';
+        if (current.capsLock !== capsLock) {
+          current.capsLock = capsLock;
+          json(current.ws, { type: 'keyboard-state', capsLock });
+        }
+      } else {
+        const access = helperAccess(line);
+        if (access?.type === 'input-access-state') {
+          if (access.blocked && !current.inputBlocked && helper.stdin.writable)
+            helper.stdin.write('R\n');
+          current.inputBlocked = access.blocked;
+          json(current.ws, access);
+          logEvent(`Windows input ${access.blocked ? 'denied' : 'restored'}; error=${access.errorCode ?? 'none'}`);
+        }
+      }
     }
+    // Only helper protocol lines are expected; bound an incomplete line.
+    if (outputText.length > 1024) outputText = '';
   });
+  clearInterval(current.keyboardStateTimer);
+  current.keyboardStateTimer = setInterval(() => {
+    if (session === current && inputHelper === helper && current.inputReady &&
+        helper.stdin.writable && helper.stdin.writableLength < 8192)
+      helper.stdin.write('C\n');
+  }, 500);
   helper.stderr.on('data', chunk => console.error('Input helper:', String(chunk).trim()));
   helper.on('error', error => {
     if (session === current && inputHelper === helper)
@@ -357,14 +419,19 @@ function startInputHelper(current) {
   helper.on('exit', code => {
     if (session !== current || inputHelper !== helper) return;
     inputHelper = null;
+    clearInterval(current.keyboardStateTimer);
+    current.capsLock = undefined;
+    json(current.ws, { type: 'keyboard-state', capsLock: null });
     current.inputReady = false;
     current.controlEnabled = false;
     clearTimeout(current.inputReadyTimer);
     json(current.ws, { type: 'control-state', enabled: false,
       text: `Windows 輸入程式已停止 (${code})` });
     logEvent(`Remote input helper stopped (${code})`);
-    if (current.controlRequested && (current.inputRestarts || 0) < 3) {
-      current.inputRestarts = (current.inputRestarts || 0) + 1;
+    const retry = nextInputRestart(current.inputRestarts || 0,
+      readyAt === null ? 0 : performance.now() - readyAt);
+    if (current.controlRequested && retry !== null) {
+      current.inputRestarts = retry;
       current.inputRestartTimer = setTimeout(() => startInputHelper(current), 500);
     }
   });
@@ -402,7 +469,7 @@ async function setGamepad(current, enabled) {
     if (generation !== current.gamepadGeneration || current !== session ||
         current.closed || !current.controlEnabled ||
         !current.gamepadRequested) return;
-    const gamepad = new ViiperGamepad({ onOffline: () => {
+    const gamepad = new ViiperGamepad({ port: viiperApiPort, onOffline: () => {
       if (current === session && current.gamepad === gamepad)
         void setGamepad(current, false);
     }, onStatus: text => {
@@ -442,17 +509,39 @@ function launchSender(current) {
   if (noLaunch) {
     json(current.ws, { type: 'status', text: 'Connected; waiting for test video source' });
   } else {
-    const exe = join(project, 'out', 'remote_desk.exe');
-    sender = spawn(exe, [current.nativeVideo ? '--network-native-60-live' :
+    const exe = systemHost ? systemHostExe : process.env.REMOTEDESK_CAPTURE_EXE || join(project, 'out', 'remote_desk.exe');
+    const captureDirectory = systemHost ?
+      join(process.env.ProgramData || 'C:\\ProgramData', 'RemoteDeskHost', 'capture-' + (profile.client === 'pc' ? '1' : '0')) :
+      profile.client === 'pc' ? join(base, profile.privateDirectory, 'capture') : project;
+    if (!systemHost) mkdirSync(captureDirectory, { recursive: true });
+    sender = spawn(exe, [...(systemHost ? ['--capture', ...(profile.client === 'pc' ? ['--client=pc'] : [])] : []), current.nativeVideo ? '--network-native-60-live' :
       current.stableVideo ? '--network-1080-30-live' :
       use720 ? '--network-60-live' : '--network-1080-60-live',
       displayArg, `--tcp-port=${tcpPort}`,
-      ...(tailnet ? ['--recovery-keyframes'] : []),
+      ...(tailnet || profile.client === 'pc' ? ['--recovery-keyframes'] : []),
       ...(current.recoveryEnabled ? ['--adaptive-recovery'] : []),
+      ...(captureRecoveryTest ? ['--capture-recovery-test'] : []),
       ...(current.mobileVideo ? ['--wan-video-mobile'] :
-        tailnet && !current.nativeVideo ? ['--wan-video'] : []),
+        tailnet ? ['--wan-video'] : []),
       ...(cpuConversion || current.cpuVideo ? ['--cpu-conversion'] : [])],
-      { cwd: project, stdio: ['pipe', 'ignore', 'ignore'], windowsHide: false });
+      { cwd: systemHost ? project : captureDirectory, stdio: ['pipe', 'ignore', 'pipe'], windowsHide: true });
+    let captureOutput = '';
+    sender.stderr.on('data', chunk => {
+      if (session !== current || current.closed) return;
+      captureOutput += String(chunk);
+      let newline;
+      while ((newline = captureOutput.indexOf('\n')) >= 0) {
+        const line = captureOutput.slice(0, newline).trim();captureOutput = captureOutput.slice(newline + 1);
+        const state = helperAccess(line);
+        if (state?.type !== 'capture-state') continue;
+        current.capturePaused = state.paused;
+        if (inputHelper?.stdin.writable) inputHelper.stdin.write('R\n');
+        current.captureResumeAt = state.paused ? null : Date.now();
+        json(current.ws, state);
+        logEvent(`Desktop capture ${state.paused ? 'paused (desktop access unavailable)' : 'resumed with a fresh frame'}`);
+      }
+      if (captureOutput.length > 4096) captureOutput = '';
+    });
     sender.stdin.on('error', error =>
       logEvent(`Capture bitrate control pipe: ${error.message}`));
     sender.on('error', error => { json(current.ws, { type: 'error', text: `Sender: ${error.message}` }); });
@@ -463,8 +552,8 @@ function launchSender(current) {
         const mode = current.adaptiveRecovery ? 'game1080' : current.nativeVideo ? 'native' : current.stableVideo ? 'stable1080' :
           current.mobileVideo ? 'mobile1080' :
           current.cpuVideo ? 'cpu1080' : 'gpu1080';
-        const name = `session-${current.startedAt}-${mode}.log`;
-        writeFileSync(join(archive, name), readFileSync(join(project, 'runtime.log')));
+        const name = `${profile.client}-session-${current.startedAt}-${mode}.log`;
+        writeFileSync(join(archive, name), readFileSync(join(captureDirectory, 'runtime.log')));
         logEvent(`Capture performance saved: ${join(archive, name)}`);
       } catch (error) {
         logEvent(`Capture performance archive failed: ${error.message}`);
@@ -691,8 +780,8 @@ function startPeer(current) {
     checkPeerState(state);
   }, 200);
   current.videoWatchdog = setInterval(() => {
-    if (session === current && current.lastVideoFrameAt &&
-        Date.now() - current.lastVideoFrameAt > 5000) {
+    if (session === current && !current.capturePaused && current.lastVideoFrameAt &&
+        Date.now() - Math.max(current.lastVideoFrameAt, current.captureResumeAt || 0) > 5000) {
       logEvent('No local H.264 source frame for 5 seconds');
       disposeSession('video stalled for 5 seconds', current);
     }
@@ -715,6 +804,8 @@ function startPeer(current) {
         lastVideoInputBytes) * 8 / elapsed) : 0,
       wanTargetKbps: current.rateControl?.targetKbps ?? null,
       wanLossPercent: current.rateControl?.lastLossPercent ?? null,
+      wanRttBackoffEnabled: current.rateControl?.rttBackoffEnabled ?? null,
+      rttControlMode: rateMode(current), hostCommit,
       sentFps: elapsed > 0 ? Math.round((current.sent - lastSent) * 10000 / elapsed) / 10 : 0,
       sourceAgeMs: current.lastVideoFrameAt ? Date.now() - current.lastVideoFrameAt : null,
       captureFps: elapsed > 0 ? Math.round(((current.sourceUpdates || 0) - lastSourceUpdates) * 10000 / elapsed) / 10 : 0,
@@ -730,7 +821,7 @@ function startPeer(current) {
 
 https.on('upgrade', (req, socket, head) => {
   if (req.url !== '/signal' ||
-      !acceptedSignalOrigin(req.headers.origin, req.headers['x-remotedesk-client'], prefix) ||
+      !acceptedSignalOrigin(req.headers.origin, req.headers['x-remotedesk-client'], prefix, profile.nativeClient) ||
       session) {
     socket.write('HTTP/1.1 403 Forbidden\r\n\r\n'); socket.destroy(); return;
   }
@@ -750,6 +841,10 @@ websocket.on('connection', (ws, req) => {
     try { message = JSON.parse(String(payload)); } catch { disposeSession('invalid message', current); return; }
     if (!current.authorized) {
       if (message.type !== 'pair' || typeof message.code !== 'string') { disposeSession('pairing required', current); return; }
+      if ((message.clientType && message.clientType !== profile.client) ||
+          (profile.client === 'pc' && message.clientType !== 'pc')) {
+        disposeSession('wrong client service', current); return;
+      }
       if (Date.now() < blockUntil) { disposeSession('pairing temporarily blocked', current); return; }
       if (!safeEqual(message.code, pairing.code)) {
         attempts++;
@@ -768,17 +863,21 @@ websocket.on('connection', (ws, req) => {
       current.mobileVideo = message.videoMode === 'mobile1080';
       current.adaptiveRecovery = tailnet && message.videoMode === 'game1080';
       logEvent(`Receiver version: ${typeof message.clientVersion === 'string' &&
-        /^\d{4}-\d{2}-\d{2}\.\d{1,3}$/.test(message.clientVersion) ? message.clientVersion : 'legacy/unreported'}; host: 2026-10-04.5`);
-      current.recoveryEnabled = tailnet;
-      current.rateControl = tailnet && !current.nativeVideo &&
+        /^\d{4}-\d{2}-\d{2}\.\d{1,3}$/.test(message.clientVersion) ? message.clientVersion : 'legacy/unreported'}; host: 2026-10-17.1`);
+      current.recoveryEnabled = tailnet || profile.client === 'pc';
+      current.rateControl = tailnet &&
         !current.stableVideo && !current.cpuVideo ?
-        new WanRateController(current.mobileVideo ? 5000 : 8000) : null;
+        new WanRateController(current.mobileVideo ? 5000 : 8000,
+          { rttBackoffEnabled: rttControl && message.rttBackoffEnabled !== false }) : null;
+      logEvent(`Rate control mode=${rateMode(current)}; RTT_CONTROL=${rttControl ? 'on' : 'off'}; commit=${hostCommit}`);
       current.audioSending = message.audioOnDemand !== true;
       logEvent(`Playback mode: ${current.syncMode}; audio_on_demand=${message.audioOnDemand === true}`);
-      logEvent(req?.headers?.['x-remotedesk-client'] === 'ipad-native-v1' ?
-        'iPad native app paired' : 'iPad browser paired');
-      json(ws, { type: 'paired', hostVersion: '2026-10-04.5',
-        inputEnabled: enableInput, audioEnabled: enableAudio,
+      logEvent(`${profile.client} ${req?.headers?.['x-remotedesk-client'] === profile.nativeClient ? 'native app' : 'browser'} paired`);
+      json(ws, { type: 'paired', hostVersion: '2026-10-17.1',
+        hostCommit, rttControlLockedOff: !rttControl, rttControlMode: rateMode(current),
+        systemHost, inputEnabled: enableInput, audioEnabled: enableAudio,
+        rttBackoffControl: true, rttBackoffEnabled: current.rateControl?.rttBackoffEnabled ?? true,
+        wanRateControl: Boolean(current.rateControl),
         gamepadEnabled: enableInput, videoRecovery: current.recoveryEnabled,
         latencyControl: true, latencyControlVersion: 4,
         transferToken: current.transferToken,
@@ -806,6 +905,13 @@ websocket.on('connection', (ws, req) => {
       if (message.type === 'set-audio-playback' && typeof message.enabled === 'boolean') {
         current.audioSending = message.enabled;
       }
+      if (message.type === 'set-rtt-backoff' && current.rateControl &&
+          typeof message.enabled === 'boolean') {
+        current.rateControl.setRttBackoffEnabled(rttControl && message.enabled);
+        json(ws, { type: 'rtt-backoff-state', enabled: current.rateControl.rttBackoffEnabled,
+          rttControlMode: rateMode(current) });
+        logEvent(`WAN RTT backoff ${current.rateControl.rttBackoffEnabled ? 'enabled' : 'disabled (loss only)'}; mode=${rateMode(current)}; commit=${hostCommit}`);
+      }
       if (message.type === 'network-feedback' && current.rateControl &&
           current.senderStarted && sender?.stdin.writable) {
         const now = performance.now();
@@ -816,7 +922,7 @@ websocket.on('connection', (ws, req) => {
             if (sender?.stdin.writable) sender.stdin.write(`BITRATE ${change.kbps}\n`);
             json(ws, { type: 'wan-rate', targetKbps: change.kbps });
             logEvent(`WAN bitrate ${change.kbps} kbps; loss=${
-              (change.lossRate * 100).toFixed(2)}%; nack=${change.retransmits}`);
+              (change.lossRate * 100).toFixed(2)}%; nack=${change.retransmits}; reason=${change.reason}; rtt_queue_ms=${change.queueDelayMs ?? 'unknown'}; mode=${rateMode(current)}; commit=${hostCommit}`);
           }
         }
       }
@@ -880,10 +986,11 @@ if (host !== '127.0.0.1') {
     caDownload.once('error', rejectListen);
     caDownload.listen(caPort, host, resolveListen);
   });
-  console.log(`iPad CA certificate download: http://${host}:${caPort}/ca.crt`);
+  console.log(`${profile.client} CA certificate download: http://${host}:${caPort}/ca.crt`);
   console.log(`Verify CA SHA-256 fingerprint before trusting: ${await certificateFingerprint()}`);
 }
-console.log(`RemoteDesk iPad bridge: ${prefix}`);
+console.log(`RemoteDesk ${profile.client} bridge: ${prefix}`);
+logEvent(`Program version: 2026-10-17.1; commit=${hostCommit}; RTT_CONTROL=${rttControl ? 'on' : 'off'}`);
 await pairing.publish();
 console.log(`One-time pairing code for this server run: ${pairing.code}`);
 console.log(`Remote input: ${enableInput ? 'enabled' : 'disabled'}; gamepad: ${enableInput ? 'on-demand VIIPER' : 'disabled'}; audio: ${enableAudio ? 'enabled' : 'disabled'}; source: ${noLaunch ? 'external test' : 'C++ capture'}; local TCP: ${tcpPort}`);

@@ -13,18 +13,52 @@ try {
   await page.setContent(await readFile(resolve(bridge, 'web/index.html'), 'utf8'));
   await page.addStyleTag({ path: resolve(bridge, 'web/style.css') });
   await page.addScriptTag({ path: resolve(bridge, 'web/app.js') });
+  if (!(await page.locator('#rttBackoff').isChecked()))
+    throw new Error('RTT backoff must default to enabled');
+  await page.evaluate(() => {
+    $('rttBackoff').checked=false; $('rttBackoff').dispatchEvent(new Event('change'));
+    if (!$('rttBackoffStatus').textContent.includes('只依失包'))
+      throw new Error('Loss-only mode explanation missing');
+    $('rttBackoff').checked=true; $('rttBackoff').dispatchEvent(new Event('change'));
+  });
+  await page.evaluate(()=>handleSignal({type:'input-access-state',blocked:true,errorCode:5}));
+  if (!(await page.locator('#hostNotice').textContent()).includes('Windows 拒絕遠端輸入'))
+    throw new Error('Input denial must be shown outside the collapsed menu');
+  await page.evaluate(()=>handleSignal({type:'capture-state',paused:true}));
+  if (!(await page.locator('#hostNotice').textContent()).includes('權限提示'))
+    throw new Error('Desktop access loss must explain the protected-desktop limit');
+  await page.evaluate(()=>handleSignal({type:'capture-state',paused:false}));
+  if (!(await page.locator('#hostNotice').textContent()).includes('Windows 拒絕遠端輸入'))
+    throw new Error('Resuming capture must not falsely clear an input delivery failure');
+  await page.evaluate(()=>handleSignal({type:'input-access-state',blocked:false}));
+  if (!(await page.locator('#hostNotice').isHidden()))throw new Error('Recovered input notice was not cleared');
   if (await page.locator('#videoMode').inputValue() !== '1080p')
     throw new Error('The known-good 1080p mode must stay the default');
-  await page.locator('#videoMode').selectOption('stable1080');
-  if (await page.locator('#videoMode').inputValue() !== 'stable1080')
-    throw new Error('The opt-in 1080p stable mode is missing');
-  await page.locator('#videoMode').selectOption('mobile1080');
-  if (await page.locator('#videoMode').inputValue() !== 'mobile1080')
-    throw new Error('The opt-in 1080p60 lower-flow mode is missing');
-  await page.locator('#videoMode').selectOption('game1080');
-  if (await page.locator('#videoMode').inputValue() !== 'game1080')
-    throw new Error('The opt-in game recovery mode is missing');
+  const modes = await page.locator('#videoMode option').evaluateAll(options => options.map(option => [option.value, option.textContent]));
+  if (JSON.stringify(modes) !== JSON.stringify([['1080p', '1080p 日常'], ['native', '2K 清晰（2560×1440）']]))
+    throw new Error('Only the daily 1080p and native 2K modes should be offered');
+  await page.locator('#videoMode').selectOption('native');
   await page.locator('#videoMode').selectOption('1080p');
+  const routeFeedback = await page.evaluate(() => {
+    const entries = [
+      ['video', { type: 'inbound-rtp', kind: 'video', packetsReceived: 1234, packetsLost: 0, nackCount: 0 }],
+      ['unused', { id: 'unused', type: 'candidate-pair', state: 'succeeded', currentRoundTripTime: .9 }],
+      ['transport', { type: 'transport', selectedCandidatePairId: 'selected' }],
+      ['selected', { id: 'selected', type: 'candidate-pair', state: 'succeeded', currentRoundTripTime: .035 }]
+    ];
+    return [readNetworkFeedback(new Map(entries)), readNetworkFeedback(new Map(entries.reverse())),
+      readNetworkFeedback(new Map([entries.find(([id]) => id === 'video')]))];
+  });
+  if (routeFeedback[0].report.rttMs !== 35 || routeFeedback[1].report.rttMs !== 35 ||
+      routeFeedback[2].report.rttMs !== null)
+    throw new Error('Feedback must use the selected route, not Map order or stale RTT');
+  await page.evaluate(() => setHostPrivilege(true));
+  if (!(await page.locator('#systemHostStatus').textContent()).includes('高權限助手已連接'))
+    throw new Error('Privileged host status missing');
+  await page.evaluate(() => setHostPrivilege(false));
+  if (!(await page.locator('#systemHostStatus').textContent()).includes('一般模式'))
+    throw new Error('Ordinary host must not claim secure desktop support');
+  await page.evaluate(() => setHostPrivilege(null));
   await page.locator('#session').evaluate(element => { element.hidden = false; });
   const video = await page.locator('#screenViewport').boundingBox();
   if (!video || video.height < 760 || await page.locator('#controlsPanel').isVisible())
@@ -37,6 +71,32 @@ try {
       !(await page.locator('#uploadFiles').isVisible()) ||
       await page.locator('#uploadFiles').getAttribute('accept') !== null)
     throw new Error('Clipboard and unrestricted file transfer cards are missing');
+  await page.evaluate(() => handleSignal({ type: 'keyboard-state', capsLock: true }));
+  if (!(await page.locator('#capsLockStatus').textContent()).includes('大寫：開'))
+    throw new Error('Host Caps Lock on state missing from tools');
+  await page.evaluate(() => handleSignal({ type: 'keyboard-state', capsLock: false }));
+  if (!(await page.locator('#capsLockStatus').textContent()).includes('大寫：關'))
+    throw new Error('Host Caps Lock off state missing from tools');
+  const capsKeys = await page.evaluate(() => {
+    const oldSendInput = sendInput;
+    const messages = [];
+    sendInput = message => messages.push(message);
+    const oldReady = controlReady;
+    controlReady = true;
+    $('control').checked = true;
+    screen.focus();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'CapsLock', code: 'CapsLock' }));
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'CapsLock', code: 'CapsLock', repeat: true }));
+    document.dispatchEvent(new KeyboardEvent('keyup', { key: 'CapsLock', code: 'CapsLock' }));
+    $('remoteCapsLock').click();
+    sendInput = oldSendInput;
+    controlReady = oldReady;
+    $('control').checked = false;
+    return messages;
+  });
+  if (JSON.stringify(capsKeys.map(item => [item.code, item.down])) !==
+      JSON.stringify([['CapsLock', true], ['CapsLock', false], ['CapsLock', true], ['CapsLock', false]]))
+    throw new Error('Caps Lock must forward one stroke per press and ignore repeats');
   await page.locator('#controlsPanel').screenshot({
     path: resolve(bridge, 'test-results', 'ipad-transfer-ui.png') });
   const edge = await page.evaluate(() => {
@@ -314,7 +374,7 @@ try {
   await page.waitForFunction(() => keyEventsSeen > 0 &&
     document.querySelector('#inputMetrics').textContent.includes('操作已啟用'));
   const inputMetrics = await page.locator('#inputMetrics').textContent();
-  if (!inputMetrics.includes('操作已啟用') || !inputMetrics.includes('Safari 收到')) {
+  if (!inputMetrics.includes('操作已啟用') || !inputMetrics.includes('瀏覽器收到')) {
     throw new Error('Keyboard diagnostics did not show control and browser input state: ' +
       inputMetrics);
   }
@@ -401,6 +461,33 @@ try {
   });
   if (reconnectedControl.checked || reconnectedControl.ready)
     throw new Error('A new pairing inherited stale remote-control consent');
+  await page.evaluate(() => {
+    stop();
+    const OriginalSocket = window.WebSocket;
+    const sockets = [];
+    window.WebSocket = class {
+      static OPEN = 1;
+      readyState = 1;
+      sent = [];
+      constructor() { sockets.push(this); }
+      send(value) { this.sent.push(value); }
+      close() { this.readyState = 3; }
+    };
+    try {
+      $('code').value = '12345678'; $('connect').click();
+      const first = sockets[0];
+      first.onclose({ reason: 'wrong pairing code' });
+      if (!$('status').textContent.includes('配對碼不正確') || $('connect').disabled)
+        throw new Error('Rejected pairing needs a visible reason and an enabled retry button');
+      $('connect').click();
+      status('等待新連線');
+      first.onerror(); first.onopen(); first.onclose({ reason: 'pairing timeout' });
+      if ($('status').textContent !== '等待新連線' || sockets[1].sent.length)
+        throw new Error('Events from an old connection modified the current connection');
+      sockets[1].onclose({ reason: 'pairing temporarily blocked' });
+      if (!$('status').textContent.includes('次數過多')) throw new Error('Pairing cooldown reason missing');
+    } finally { stop(); window.WebSocket = OriginalSocket; }
+  });
   console.log('iPad-size text zoom, panning, pointer mapping, audio readiness, and stall display passed');
 } finally {
   await browser.close();

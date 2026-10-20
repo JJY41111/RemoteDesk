@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>動態畫面測試</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+    body { background: #080c14; color: #fff; font-family: system-ui, sans-serif; }
+    main {
+      height: 100%; height: 100dvh;
+      padding: max(16px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right))
+        max(16px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
+      display: grid; grid-template-rows: auto minmax(100px, 1fr) minmax(60px, .65fr) minmax(80px, 1fr);
+      gap: 16px;
+    }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    h1 { margin: 0; font-size: clamp(16px, 2.4vw, 26px); }
+    button { background: #192335; color: #fff; border: 1px solid #62738f; border-radius: 8px;
+      padding: 9px 16px; font: inherit; cursor: pointer; white-space: nowrap; }
+    button:focus-visible { outline: 3px solid #d4ff00; outline-offset: 3px; }
+    #counterPanel { display: flex; flex-direction: column; align-items: center; justify-content: center; }
+    #counter { font: 800 clamp(48px, 13vw, 160px)/1.05 ui-monospace, Consolas, monospace;
+      font-variant-numeric: tabular-nums; letter-spacing: .025em; }
+    .label { color: #b8c7dc; font-size: clamp(12px, 1.8vw, 18px); margin-top: 8px; }
+    #track { position: relative; overflow: hidden; border: 2px solid #64738a; border-radius: 6px;
+      background: repeating-linear-gradient(90deg, #0e1624 0, #0e1624 calc(10% - 1px), #354056 calc(10% - 1px), #354056 10%); }
+    #block { position: absolute; top: 10%; bottom: 10%; width: clamp(44px, 14vw, 180px);
+      background: #d4ff00; border: 4px solid #fff; will-change: transform; }
+    #scrollWindow { overflow: hidden; border: 1px solid #3f4d65; border-radius: 6px; padding: 0 20px; }
+    #scrollText { will-change: transform; }
+    .copy { margin: 0; padding: 16px 0; font-size: clamp(19px, 2.4vw, 30px); line-height: 1.9; }
+    .copy p { margin: 0 0 12px; }
+    .copy strong { color: #76eaff; }
+    @media (max-height: 430px) {
+      main { gap: 8px; padding-top: 8px; padding-bottom: 8px; grid-template-rows: auto 1fr .65fr 1fr; }
+      #counter { font-size: clamp(40px, 12vh, 80px); }
+      .label { margin-top: 2px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>動態畫面測試</h1>
+      <button id="fullscreen" type="button">全螢幕</button>
+    </header>
+    <section id="counterPanel" aria-label="畫面更新計數器">
+      <div id="counter">00000000</div>
+      <div class="label">每次瀏覽器畫面更新回呼加 1 · 色塊每 4 秒完成一次來回</div>
+    </section>
+    <div id="track" aria-label="左右持續移動的高對比色塊"><div id="block"></div></div>
+    <section id="scrollWindow" aria-label="持續向上捲動的文字">
+      <div id="scrollText">
+        <div class="copy" id="originalText">
+          <p><strong>01 — 連續移動測試：</strong>觀察上方色塊是否平順往返，有沒有突然停住、跳動或拖影。</p>
+          <p><strong>02 — 影格計數測試：</strong>大字數字在每次 requestAnimationFrame 回呼時遞增，可比較主機與遠端畫面顯示的數值。</p>
+          <p><strong>03 — 文字清晰度測試：</strong>這段文字會持續向上捲動。請觀察中文字、標點與細節是否清楚，移動時是否變得模糊。</p>
+          <p><strong>04 — 程式碼閱讀測試：</strong><code>for (int frame = 0; frame &lt; 600; ++frame) { render(frame); }</code></p>
+          <p><strong>05 — 字元辨識測試：</strong>ABCDEFGHIJKLMNOPQRSTUVWXYZ · abcdefghijklmnopqrstuvwxyz · 0123456789 · {} [] () &lt;&gt; / \ + - =</p>
+          <p><strong>06 — 同步觀察：</strong>同時查看主機與接收端的色塊位置、數字及文字。此計數器表示瀏覽器更新回呼次數，不代表遠端實際收到的影格數。</p>
+          <p><strong>07 — 持續循環：</strong>接下來文字將無縫重複，方便觀察長時間播放的穩定性。</p>
+        </div>
+      </div>
+    </section>
+  </main>
+  <script>
+    'use strict';
+    const counter = document.getElementById('counter');
+    const track = document.getElementById('track');
+    const block = document.getElementById('block');
+    const scrollText = document.getElementById('scrollText');
+    const originalText = document.getElementById('originalText');
+    const fullscreen = document.getElementById('fullscreen');
+    const copy = originalText.cloneNode(true);
+    copy.removeAttribute('id');
+    copy.setAttribute('aria-hidden', 'true');
+    scrollText.append(copy);
+
+    let travel = 0, textHeight = 1, frames = 0, startedAt;
+    function measure() {
+      travel = Math.max(0, track.clientWidth - block.offsetWidth);
+      textHeight = Math.max(1, originalText.offsetHeight);
+    }
+    new ResizeObserver(measure).observe(track);
+    new ResizeObserver(measure).observe(originalText);
+    measure();
+
+    function draw(now) {
+      startedAt ??= now;
+      const elapsed = now - startedAt;
+      const phase = (elapsed % 4000) / 4000;
+      const position = phase < .5 ? phase * 2 : (1 - phase) * 2;
+      counter.textContent = String(++frames).padStart(8, '0');
+      block.style.transform = `translate3d(${(position * travel).toFixed(2)}px, 0, 0)`;
+      scrollText.style.transform = `translate3d(0, -${((elapsed * .045) % textHeight).toFixed(2)}px, 0)`;
+      requestAnimationFrame(draw);
+    }
+    requestAnimationFrame(draw);
+
+    fullscreen.hidden = !document.documentElement.requestFullscreen;
+    fullscreen.addEventListener('click', async () => {
+      try {
+        if (document.fullscreenElement) await document.exitFullscreen();
+        else await document.documentElement.requestFullscreen();
+      } catch { fullscreen.textContent = '瀏覽器未允許全螢幕'; }
+    });
+    document.addEventListener('fullscreenchange', () => {
+      fullscreen.textContent = document.fullscreenElement ? '退出全螢幕' : '全螢幕';
+    });
+  </script>
+</body>
+</html>

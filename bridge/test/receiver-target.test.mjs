@@ -29,3 +29,11 @@ test('active target adapts down on a clean route and invalid floor stats cannot 
   assert.equal(calculate('video', {videoMinimumMs: NaN, rttMs: -1}, 400), 80);
   assert.equal(calculate('video', {}, 80, 120), 120);
 });
+
+test('actual backlog cannot be hidden by a lower reported target', () => {
+  assert.equal(calculate('video', {videoTargetMs: 60, videoBufferMs: 683,
+    videoMinimumMs: 60, rttMs: 668}, null, 120), 380);
+  assert.equal(calculate('video', {videoTargetMs: 60, videoBufferMs: 422,
+    videoMinimumMs: 57, rttMs: 100}, null, 120), 120);
+  assert.equal(calculate('video', {videoTargetMs: 60, videoBufferMs: 75}, null, 120), null);
+});

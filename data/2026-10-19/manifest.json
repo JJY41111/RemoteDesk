@@ -1,0 +1,72 @@
+[
+  {
+    "file": "normal-01-off.csv",
+    "original_basename": "remotedesk-metrics-2026-10-19T11-57-59-729Z-1B-via.csv",
+    "sha256": "80f00ea5bf67de51ec32b76a9c2efbd11d4922bdb281176b179c0b485bffca83"
+  },
+  {
+    "file": "normal-02-off.csv",
+    "original_basename": "remotedesk-metrics-2026-10-19T12-03-22-278Z-2B-via.csv",
+    "sha256": "4a5535ab59d566ed41e0b3ee87eb6e5c48237a59b41bdf661af8fa044641e4c6"
+  },
+  {
+    "file": "normal-03-off.csv",
+    "original_basename": "remotedesk-metrics-2026-10-19T12-07-14-577Z-3B- via.csv",
+    "sha256": "213ac81d78d7ec9855604b56e42931be49d6381094a45af4ced586841aef3a92"
+  },
+  {
+    "file": "normal-04-on.csv",
+    "original_basename": "remotedesk-metrics-2026-10-19T12-12-25-470Z-4A-via.csv",
+    "sha256": "573d95105ebc146b8981f673527aae59dcf0ead6290dbb8e52a7f7a23fb66797"
+  },
+  {
+    "file": "normal-05-on.csv",
+    "original_basename": "remotedesk-metrics-2026-10-19T12-16-21-288Z-5A-via.csv",
+    "sha256": "bf60873ca971f7288976a88afe91e1b5003821e5372f7724b590e90321503242"
+  },
+  {
+    "file": "normal-06-on.csv",
+    "original_basename": "remotedesk-metrics-2026-10-19T12-20-41-570Z-6A.csv",
+    "sha256": "28aec2586b59b8806b2e1471c0150100283fbea187bea64ca21e7e42d6591e61"
+  },
+  {
+    "file": "normal-07-off.csv",
+    "original_basename": "remotedesk-metrics-2026-10-19T12-25-44-545Z-7B.csv",
+    "sha256": "fd6f282314fcc50f003770f79ab6cac7f6228e9af523b29d02e4d6447fd87c95"
+  },
+  {
+    "file": "normal-08-on.csv",
+    "original_basename": "remotedesk-metrics-2026-10-19T12-29-37-294Z-8A.csv",
+    "sha256": "1d16de62fc76ee93e879d5587dfbef6cdba2bfc0237350cd1262e4dbaa0e1bbd"
+  },
+  {
+    "file": "normal-09-off.csv",
+    "original_basename": "remotedesk-metrics-2026-10-19T12-33-29-227Z-9B.csv",
+    "sha256": "7e5e2a3f9003eec1921b1393f3dcf993f8f9b666eb18f6c82d4d1f41dd40ab3b"
+  },
+  {
+    "file": "normal-10-on.csv",
+    "original_basename": "remotedesk-metrics-2026-10-19T12-38-05-921Z-10A.csv",
+    "sha256": "6f9bd6fec3f980d2cf9310cdd5a31b5bd0e573fa444202a67c9917eaf229990a"
+  },
+  {
+    "file": "stress-01-on.csv",
+    "original_basename": "remotedesk-metrics-2026-10-19T13-05-50-574Z-1開.csv",
+    "sha256": "51c83286a89f89b8e5c9f8b44efc8f5bf419c5f0cde790ffae3cdfd91316dece"
+  },
+  {
+    "file": "stress-02-on.csv",
+    "original_basename": "remotedesk-metrics-2026-10-19T13-13-10-869Z-2開.csv",
+    "sha256": "2306ef784d255c68fdf2138ecd0dce11e19b11603bd828416effe647855f66b0"
+  },
+  {
+    "file": "stress-03-off.csv",
+    "original_basename": "remotedesk-metrics-2026-10-19T13-17-51-750Z-3關.csv",
+    "sha256": "0bdb42f141494033ffc9d8ee29cfccb1c68d271248358d9878c572caf7fbb94b"
+  },
+  {
+    "file": "stress-04-off.csv",
+    "original_basename": "remotedesk-metrics-2026-10-19T13-21-49-527Z-4關.csv",
+    "sha256": "0077a2a54e62b015db31c882b2e1f959094925790e8cbb8e63af7d7d43042173"
+  }
+]

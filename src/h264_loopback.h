@@ -47,7 +47,7 @@ public:
                            std::uint64_t sourceEventQpc = 0,
                            std::uint64_t captureReadyQpc = 0);
     bool SetTargetBitrate(UINT bitrate);
-    void RequestRecoveryKeyframe() { nextRecoveryKeyframe_ = Clock::now(); }
+    void RequestRecoveryKeyframe() { requestedRecoveryKeyframe_ = true; }
     void Stop(bool emitFinalPackets = true);
     void SetPacketCallback(std::function<void(
         const std::vector<std::uint8_t>&, LONGLONG, LONGLONG,
@@ -140,6 +140,7 @@ private:
     Clock::time_point streamStartedAt_{};
     Clock::time_point nextRecoveryKeyframe_{};
     bool recoveryKeyframes_{};
+    bool requestedRecoveryKeyframe_{};
     bool adaptiveRecovery_{};
 
     LoopbackStatistics statistics_{};

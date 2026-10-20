@@ -4,6 +4,7 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [Windows.Forms.Application]::EnableVisualStyles()
 . (Join-Path $PSScriptRoot 'launcher\Launcher.Core.ps1')
+. (Join-Path $PSScriptRoot 'launcher\PC.Client.ps1')
 $form = New-Object Windows.Forms.Form
 $form.Text = 'RemoteDesk 啟動器'
 $form.ClientSize = New-Object Drawing.Size(940,700)
@@ -32,16 +33,18 @@ function Add-Field($Parent,$X,$Y,$Width) {
 }
 $title = Add-Label $form 'RemoteDesk' 26 20 430 40
 $title.Font = New-Object Drawing.Font('Segoe UI',23,[Drawing.FontStyle]::Bold)
-$null = Add-Label $form '選擇連線方式，按「開始」；不用開終端機。' 28 68 850 30
+$null = Add-Label $form '選擇跨網路接收裝置，按「開始」；主機與接收端都需連上 Tailscale。' 28 68 850 30
 $tabs=New-Object Windows.Forms.TabControl
 $tabs.SetBounds(24,112,892,560); $tabs.Anchor='Top,Bottom,Left,Right'
 $form.Controls.Add($tabs)
 $script:pages=@()
-foreach ($mode in @('lan','wan')) {
+foreach ($spec in @(@{Mode='wan';Client='ipad'},@{Mode='wan';Client='pc'})) {
+    $mode=$spec.Mode;$client=$spec.Client
     $tab=New-Object Windows.Forms.TabPage
-    $tab.Text=if($mode -eq 'lan'){'同網路 iPad'}else{'跨網路 iPad'}
+    $device=if($client -eq 'pc'){'筆電'}else{'iPad'}
+    $tab.Text="跨網路 $device"
     $tab.BackColor=[Drawing.Color]::White; $tabs.TabPages.Add($tab)
-    $hint=if($mode -eq 'lan'){'PC與iPad連上同一個Wi-Fi／區域網路即可。'}else{'PC與iPad都必須連上同一個Tailscale帳號的網路。'}
+    $hint="主機與${device}接收端須連上可互通的 Tailscale 網路。"
     $null=Add-Label $tab $hint 24 20 800 30
     $null=Add-Label $tab '主機網路位址' 24 67 160 26
     $network=New-Object Windows.Forms.ComboBox
@@ -52,7 +55,7 @@ foreach ($mode in @('lan','wan')) {
     $start.BackColor=[Drawing.Color]::FromArgb(38,101,211); $start.ForeColor=[Drawing.Color]::White
     $stop=Add-Button $tab '停止服務' 184 155 145; $stop.Enabled=$false
     $state=Add-Label $tab '尚未啟動' 354 164 482 34
-    $null=Add-Label $tab '在iPad開啟此網址' 24 218 400 25
+    $null=Add-Label $tab "在${device}接收端開啟此網址" 24 218 400 25
     $url=Add-Field $tab 24 247 590
     $copyUrl=Add-Button $tab '複製網址' 636 242 200
     $null=Add-Label $tab '本次配對碼' 24 300 400 25
@@ -66,7 +69,7 @@ foreach ($mode in @('lan','wan')) {
     $change=Add-Button $tab '修改配對碼' 24 386 200
     $detail=Add-Label $tab '啟動後會顯示配對資訊；關閉此視窗不會停止遠端服務。' 24 444 812 68
     $detail.ForeColor=[Drawing.Color]::FromArgb(80,94,111)
-    $page=[pscustomobject]@{Mode=$mode;Network=$network;Start=$start;Stop=$stop;State=$state;Url=$url;Code=$code;Detail=$detail;Config=$null;PendingAt=$null}
+    $page=[pscustomobject]@{Mode=$mode;Client=$client;Network=$network;Start=$start;Stop=$stop;State=$state;Url=$url;Code=$code;Detail=$detail;Config=$null;PendingAt=$null}
     $script:pages += $page
     foreach($button in @($start,$stop,$refresh,$copyUrl,$copyCode,$change)){$button.Tag=$page}
     $change.Add_Click({
@@ -80,7 +83,7 @@ foreach ($mode in @('lan','wan')) {
         $page=$this.Tag
         try {
             if(!$page.Network.SelectedItem){throw '沒有可用網路；跨網路模式請先連上Tailscale。'}
-            $page.Config=New-RemoteDeskConfig $PSScriptRoot $page.Mode $page.Network.SelectedItem.Address
+            $page.Config=New-RemoteDeskConfig $PSScriptRoot $page.Mode $page.Network.SelectedItem.Address -Client $page.Client
             $result=Start-RemoteDeskService $page.Config
             if(!$result.Running){$page.PendingAt=[DateTime]::UtcNow;$page.State.Text='正在啟動…';$page.Start.Enabled=$false}
             Update-Page $page
@@ -135,7 +138,7 @@ function Show-PairingEditor($Page) {
     $password=Add-SecretField $editor 58
     $null=Add-Label $editor '新的8位數配對碼' 24 116 418 26
     $newCode=Add-SecretField $editor 153;$newCode.MaxLength=8
-    $null=Add-Label $editor '只修改目前分頁。已連線的iPad不會被中斷；下一次連線使用新碼。' 24 211 418 65
+    $null=Add-Label $editor '只修改目前分頁。已連線的接收端不會被中斷；下一次連線使用新碼。' 24 211 418 65
     $apply=Add-Button $editor '驗證並更新' 24 294 200
     $apply.Add_Click({
         try {
@@ -150,7 +153,7 @@ function Refresh-Networks($Page) {
     try {
         $Page.Network.Items.Clear()
         foreach($item in @(Get-RemoteDeskAddresses | Where-Object {$_.Mode -eq $Page.Mode})){$Page.Network.Items.Add($item)|Out-Null}
-        if($Page.Network.Items.Count){$Page.Network.SelectedIndex=0;$Page.Config=New-RemoteDeskConfig $PSScriptRoot $Page.Mode $Page.Network.SelectedItem.Address;Update-Page $Page}
+        if($Page.Network.Items.Count){$Page.Network.SelectedIndex=0;$Page.Config=New-RemoteDeskConfig $PSScriptRoot $Page.Mode $Page.Network.SelectedItem.Address -Client $Page.Client;Update-Page $Page}
         else {$Page.State.Text='未偵測到網路';$Page.Detail.Text=if($Page.Mode -eq 'wan'){'請先開啟Tailscale並連線，再按重新整理。'}else{'請先連上家中Wi-Fi或網路線，再按重新整理。'}}
     } catch {$Page.Detail.Text=$_.Exception.Message}
 }
@@ -161,8 +164,8 @@ function Update-Page($Page) {
         $Page.Stop.Enabled=$state.Running -and $state.Manageable
         if($state.Running){
             $Page.PendingAt=$null;$Page.Start.Enabled=$false;$Page.Start.Text='已啟動'
-            $Page.State.Text='服務運作中';$Page.Url.Text=$Page.Config.Url;$Page.Code.Text=$state.Code
-            $Page.Detail.Text=if($state.Manageable){'服務已啟動，可在iPad連線。停止前請先將iPad斷線；關閉啟動器不會停止服務。'}else{'已沿用運作中的服務，但無法核對管理權限，停止服務暫不可用。'}
+            $Page.State.Text='服務運作中';$Page.Url.Text=if($Page.Client -eq 'pc'){Get-RemoteDeskPCUrl $Page.Config.Url}else{$Page.Config.Url};$Page.Code.Text=$state.Code
+            $Page.Detail.Text=if($state.Manageable){'此分頁服務已啟動。停止前先將接收端斷線；關閉啟動器不會停止服務。PC與iPad的啟停、配對與設定各自獨立。'}else{'已沿用運作中的服務，但無法核對管理權限，停止服務暫不可用。'}
         } elseif($Page.PendingAt -and ([DateTime]::UtcNow-$Page.PendingAt).TotalSeconds -lt 20){$Page.State.Text='正在啟動…'}
         else {
             $Page.Start.Enabled=$true;$Page.Start.Text='開始';$Page.State.Text='尚未啟動';$Page.Url.Text='';$Page.Code.Text=''
@@ -170,12 +173,6 @@ function Update-Page($Page) {
         }
     } catch {$Page.State.Text='需要檢查';$Page.Detail.Text=$_.Exception.Message;$Page.Start.Enabled=$true}
 }
-$reserved=New-Object Windows.Forms.TabPage
-$reserved.Text='跨網路 PC（預留）';$reserved.BackColor=[Drawing.Color]::White;$tabs.TabPages.Add($reserved)
-$future=Add-Label $reserved '跨網路 PC 對 PC' 36 54 720 55
-$future.Font=New-Object Drawing.Font('Microsoft JhengHei UI',22,[Drawing.FontStyle]::Bold)
-$null=Add-Label $reserved '此分頁預留給下一階段，目前先完成iPad使用。' 40 130 760 48
-$futureButton=Add-Button $reserved '尚未開放' 40 202 220;$futureButton.Enabled=$false
 foreach($page in $script:pages){Refresh-Networks $page}
 $timer=New-Object Windows.Forms.Timer
 $timer.Interval=3000
@@ -185,8 +182,8 @@ if($Preview){
     $form.CreateControl();$form.Show();$form.Refresh()
     if($ValidateServiceButtons){
         $script:OriginalConfigFactory=${function:New-RemoteDeskConfig}
-        function New-RemoteDeskConfig($Root,$Mode,$HostAddress){
-            $isolated=& $script:OriginalConfigFactory $Root $Mode $HostAddress 19561 19562
+        function New-RemoteDeskConfig($Root,$Mode,$HostAddress,$Client='ipad'){
+            $isolated=& $script:OriginalConfigFactory $Root $Mode $HostAddress 19561 19562 $Client
             $isolated.Metadata=Join-Path $Root 'bridge\private\launcher-buttons.json'
             $isolated.Stdout=Join-Path $Root 'bridge\private\launcher-buttons.stdout.log'
             $isolated.Stderr=Join-Path $Root 'bridge\private\launcher-buttons.stderr.log'
@@ -238,14 +235,15 @@ if($Preview){
     }
     if($ValidateLive){
         foreach($page in $script:pages){
-            $tabs.SelectedIndex=if($page.Mode -eq 'lan'){0}else{1}
+            $tabs.SelectedIndex=if($page.Client -eq 'ipad'){0}else{1}
             $page.Start.PerformClick()
             if($page.State.Text -ne '服務運作中' -or $page.Code.Text -notmatch '^\d{8}$'){throw "GUI start failed: $($page.Detail.Text)"}
             if($page.Start.Enabled -or $page.Start.Text -ne '已啟動' -or !$page.Stop.Enabled){throw 'Running service buttons have incorrect states'}
         }
-        if($tabs.TabPages.Count -ne 3 -or $futureButton.Enabled){throw 'Reserved PC tab must stay inactive'}
-        Write-Output 'GUI Start buttons, existing-service reuse and reserved tab passed.'
+        if($tabs.TabPages.Count -ne 2){throw 'Only the two WAN receiver tabs should be exposed'}
+        Write-Output 'GUI Start buttons, existing-service reuse and two WAN receiver tabs passed.'
     }
+    if($tabs.TabPages.Count -ne 2 -or $tabs.TabPages[0].Text -ne '跨網路 iPad' -or $tabs.TabPages[1].Text -ne '跨網路 筆電'){throw 'Unexpected launcher tabs'}
     $tabs.SelectedIndex=$PreviewTab;$form.Refresh()
     if($PreviewPath){$bitmap=New-Object Drawing.Bitmap($form.Width,$form.Height);$form.DrawToBitmap($bitmap,(New-Object Drawing.Rectangle(0,0,$form.Width,$form.Height)));$bitmap.Save($PreviewPath);$bitmap.Dispose()}
     $form.Close();$form.Dispose()

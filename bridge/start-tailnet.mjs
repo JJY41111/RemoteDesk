@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { localTailnetIPv4 } from './tailnet-address.mjs';
@@ -14,7 +14,12 @@ if (addresses.length !== 1) {
 const host = addresses[0];
 console.log(`RemoteDesk cross-region URL: https://${host}:9443/`);
 console.log('Keep this process running while using the iPad.');
+const service = spawnSync(join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'sc.exe'),
+  ['query', 'RemoteDeskHost'], { windowsHide: true, timeout: 3000, stdio: 'ignore' });
+if (service.status !== 0 && service.status !== 1060)
+  throw new Error('Cannot determine RemoteDeskHost installation state; no privilege fallback used.');
 const child = spawn(process.execPath, [join(base, 'server.mjs'),
+  ...(service.status === 0 ? ['--system-host'] : []),
   '--tailnet', `--host=${host}`, '--port=9443', '--tcp-port=55445',
   '--enable-input', '--audio', '--display=0:0', '--gamepad=viiper'],
   { cwd: base, stdio: 'inherit', windowsHide: true });
